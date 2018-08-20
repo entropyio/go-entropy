@@ -1,0 +1,91 @@
+package mapper
+
+import (
+	"github.com/entropyio/go-entropy/blockchain/model"
+	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/database"
+)
+
+// ReadTxLookupEntry retrieves the positional metadata associated with a transaction
+// hash to allow retrieving the transaction or receipt by hash.
+func ReadTxLookupEntry(db database.DBReader, hash common.Hash) (common.Hash, uint64, uint64) {
+	data, _ := db.Get(txLookupKey(hash))
+	if len(data) == 0 {
+		return common.Hash{}, 0, 0
+	}
+	var entry TxLookupEntry
+	if err := rlputil.DecodeBytes(data, &entry); err != nil {
+		mapperLog.Error("Invalid transaction lookup entry RLP", "hash", hash, "err", err)
+		return common.Hash{}, 0, 0
+	}
+	return entry.BlockHash, entry.BlockIndex, entry.Index
+}
+
+// WriteTxLookupEntries stores a positional metadata for every transaction from
+// a block, enabling hash based transaction and receipt lookups.
+func WriteTxLookupEntries(db database.DBWriter, block *model.Block) {
+	for i, tx := range block.Transactions() {
+		entry := TxLookupEntry{
+			BlockHash:  block.Hash(),
+			BlockIndex: block.NumberU64(),
+			Index:      uint64(i),
+		}
+		data, err := rlputil.EncodeToBytes(entry)
+		if err != nil {
+			mapperLog.Critical("Failed to encode transaction lookup entry", "err", err)
+		}
+		if err := db.Put(txLookupKey(tx.Hash()), data); err != nil {
+			mapperLog.Critical("Failed to store transaction lookup entry", "err", err)
+		}
+	}
+}
+
+// DeleteTxLookupEntry removes all transaction data associated with a hash.
+func DeleteTxLookupEntry(db database.DBDeleter, hash common.Hash) {
+	db.Delete(txLookupKey(hash))
+}
+
+// ReadTransaction retrieves a specific transaction from the database, along with
+// its added positional metadata.
+func ReadTransaction(db database.DBReader, hash common.Hash) (*model.Transaction, common.Hash, uint64, uint64) {
+	blockHash, blockNumber, txIndex := ReadTxLookupEntry(db, hash)
+	if blockHash == (common.Hash{}) {
+		return nil, common.Hash{}, 0, 0
+	}
+	body := ReadBody(db, blockHash, blockNumber)
+	if body == nil || len(body.Transactions) <= int(txIndex) {
+		mapperLog.Error("Transaction referenced missing", "number", blockNumber, "hash", blockHash, "index", txIndex)
+		return nil, common.Hash{}, 0, 0
+	}
+	return body.Transactions[txIndex], blockHash, blockNumber, txIndex
+}
+
+// ReadReceipt retrieves a specific transaction receipt from the database, along with
+// its added positional metadata.
+func ReadReceipt(db database.DBReader, hash common.Hash) (*model.Receipt, common.Hash, uint64, uint64) {
+	blockHash, blockNumber, receiptIndex := ReadTxLookupEntry(db, hash)
+	if blockHash == (common.Hash{}) {
+		return nil, common.Hash{}, 0, 0
+	}
+	receipts := ReadReceipts(db, blockHash, blockNumber)
+	if len(receipts) <= int(receiptIndex) {
+		mapperLog.Error("Receipt refereced missing", "number", blockNumber, "hash", blockHash, "index", receiptIndex)
+		return nil, common.Hash{}, 0, 0
+	}
+	return receipts[receiptIndex], blockHash, blockNumber, receiptIndex
+}
+
+// ReadBloomBits retrieves the compressed bloom bit vector belonging to the given
+// section and bit index from the.
+func ReadBloomBits(db database.DBReader, bit uint, section uint64, head common.Hash) ([]byte, error) {
+	return db.Get(bloomBitsKey(bit, section, head))
+}
+
+// WriteBloomBits stores the compressed bloom bits vector belonging to the given
+// section and bit index.
+func WriteBloomBits(db database.DBWriter, bit uint, section uint64, head common.Hash, bits []byte) {
+	if err := db.Put(bloomBitsKey(bit, section, head), bits); err != nil {
+		mapperLog.Critical("Failed to store bloom bits", "err", err)
+	}
+}

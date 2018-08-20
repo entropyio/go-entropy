@@ -1,0 +1,19 @@
+{
+  "comment": "",
+  "ignore": "test",
+  "package": [
+    {
+      "checksumSHA1": "Yx1MU40fyGe7hhqW9+dkv8kXa60=",
+      "path": "gopkg.in/urfave/cli.v1",
+      "revision": "cfb38830724cc34fedffe9a2a29fb54fa9169cd1",
+      "revisionTime": "2017-08-11T01:42:03Z"
+    },
+    {
+      "checksumSHA1": "5uqO4ITTDMklKi3uNaE/D9LQ5nM=",
+      "path": "github.com/robertkrimen/otto",
+      "revision": "6a77b7cbc37d0c39f7d5fa5766826e541df31fd5",
+      "revisionTime": "2017-02-05T01:36:59Z"
+    }
+  ],
+  "rootPath": "github.com/space/go-space"
+}
