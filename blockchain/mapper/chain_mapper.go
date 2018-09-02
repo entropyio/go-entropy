@@ -15,7 +15,7 @@ import (
 func ReadCanonicalHash(db database.DBReader, number uint64) common.Hash {
 	key := headerHashKey(number)
 	data, _ := db.Get(key)
-	mapperLog.Debugf("ReadCanonicalHash: number=%d, key=%c, key=%X, data=%X", number, key[0], key, data)
+	//mapperLog.Debugf("ReadCanonicalHash: number=%d, key=%c, key=%X, data=%X", number, key[0], key, data)
 	if len(data) == 0 {
 		return common.Hash{}
 	}
@@ -45,7 +45,7 @@ func DeleteCanonicalHash(db database.DBDeleter, number uint64) {
 func ReadHeaderNumber(db database.DBReader, hash common.Hash) *uint64 {
 	key := headerNumberKey(hash)
 	data, _ := db.Get(key)
-	mapperLog.Debugf("ReadHeaderNumber: key=%c, key=%X, data=%X", key[0], key, data)
+	//mapperLog.Debugf("ReadHeaderNumber: key=%c, key=%X, data=%X", key[0], key, data)
 
 	if len(data) != 8 {
 		return nil
@@ -71,13 +71,13 @@ func WriteHeadHeaderHash(db database.DBWriter, hash common.Hash) {
 	if err := db.Put(headHeaderKey, data); err != nil {
 		mapperLog.Critical("Failed to store last header's hash", "err", err)
 	}
-	mapperLog.Debugf("WriteHeadHeaderHash: key=%s, key=%X, data=%X", headHeaderKey, headHeaderKey, data)
+	//mapperLog.Debugf("WriteHeadHeaderHash: key=%s, key=%X, data=%X", headHeaderKey, headHeaderKey, data)
 }
 
 // ReadHeadBlockHash retrieves the hash of the current canonical head block.
 func ReadHeadBlockHash(db database.DBReader) common.Hash {
 	data, _ := db.Get(headBlockKey)
-	mapperLog.Debugf("ReadHeadBlockHash: key=%s, key=%X, data=%X", headBlockKey, headBlockKey, data)
+	//mapperLog.Debugf("ReadHeadBlockHash: key=%s, key=%X, data=%X", headBlockKey, headBlockKey, data)
 
 	if len(data) == 0 {
 		return common.Hash{}
@@ -211,7 +211,7 @@ func DeleteHeader(db database.DBDeleter, hash common.Hash, number uint64) {
 func ReadBodyRLP(db database.DBReader, hash common.Hash, number uint64) rlputil.RawValue {
 	key := blockBodyKey(number, hash)
 	data, _ := db.Get(key)
-	mapperLog.Debugf("ReadBodyRLP: number=%d, key=%c, key=%X, data=%X", number, key[0], key, data)
+	//mapperLog.Debugf("ReadBodyRLP: number=%d, key=%c, key=%X, data=%X", number, key[0], key, data)
 	return data
 }
 
@@ -269,7 +269,7 @@ func DeleteBody(db database.DBDeleter, hash common.Hash, number uint64) {
 func ReadTd(db database.DBReader, hash common.Hash, number uint64) *big.Int {
 	key := headerTDKey(number, hash)
 	data, _ := db.Get(key)
-	mapperLog.Debugf("ReadTd: number=%d, key=%c, key=%X, data=%X", number, key[0], key, data)
+	//mapperLog.Debugf("ReadTd: number=%d, key=%c, key=%X, data=%X", number, key[0], key, data)
 
 	if len(data) == 0 {
 		return nil

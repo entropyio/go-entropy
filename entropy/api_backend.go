@@ -23,58 +23,58 @@ import (
 
 // EthAPIBackend implements entropyapi.Backend for full nodes
 type EthAPIBackend struct {
-	eth *Entropy
+	entropy *Entropy
 	gpo *gasprice.Oracle
 }
 
 // ChainConfig returns the active chain configuration.
 func (b *EthAPIBackend) ChainConfig() *config.ChainConfig {
-	return b.eth.chainConfig
+	return b.entropy.chainConfig
 }
 
 func (b *EthAPIBackend) CurrentBlock() *model.Block {
-	return b.eth.blockchain.CurrentBlock()
+	return b.entropy.blockchain.CurrentBlock()
 }
 
 func (b *EthAPIBackend) SetHead(number uint64) {
-	b.eth.protocolManager.downloader.Cancel()
-	b.eth.blockchain.SetHead(number)
+	b.entropy.protocolManager.downloader.Cancel()
+	b.entropy.blockchain.SetHead(number)
 }
 
 func (b *EthAPIBackend) HeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*model.Header, error) {
 	// Pending block is only known by the miner
 	if blockNr == rpc.PendingBlockNumber {
-		block := b.eth.miner.PendingBlock()
+		block := b.entropy.miner.PendingBlock()
 		return block.Header(), nil
 	}
 	// Otherwise resolve and return the block
 	if blockNr == rpc.LatestBlockNumber {
-		return b.eth.blockchain.CurrentBlock().Header(), nil
+		return b.entropy.blockchain.CurrentBlock().Header(), nil
 	}
-	return b.eth.blockchain.GetHeaderByNumber(uint64(blockNr)), nil
+	return b.entropy.blockchain.GetHeaderByNumber(uint64(blockNr)), nil
 }
 
 func (b *EthAPIBackend) HeaderByHash(ctx context.Context, hash common.Hash) (*model.Header, error) {
-	return b.eth.blockchain.GetHeaderByHash(hash), nil
+	return b.entropy.blockchain.GetHeaderByHash(hash), nil
 }
 
 func (b *EthAPIBackend) BlockByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*model.Block, error) {
 	// Pending block is only known by the miner
 	if blockNr == rpc.PendingBlockNumber {
-		block := b.eth.miner.PendingBlock()
+		block := b.entropy.miner.PendingBlock()
 		return block, nil
 	}
 	// Otherwise resolve and return the block
 	if blockNr == rpc.LatestBlockNumber {
-		return b.eth.blockchain.CurrentBlock(), nil
+		return b.entropy.blockchain.CurrentBlock(), nil
 	}
-	return b.eth.blockchain.GetBlockByNumber(uint64(blockNr)), nil
+	return b.entropy.blockchain.GetBlockByNumber(uint64(blockNr)), nil
 }
 
 func (b *EthAPIBackend) StateAndHeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*state.StateDB, *model.Header, error) {
 	// Pending state is only known by the miner
 	if blockNr == rpc.PendingBlockNumber {
-		block, stateDBObj := b.eth.miner.Pending()
+		block, stateDBObj := b.entropy.miner.Pending()
 		return stateDBObj, block.Header(), nil
 	}
 
@@ -83,27 +83,27 @@ func (b *EthAPIBackend) StateAndHeaderByNumber(ctx context.Context, blockNr rpc.
 	if header == nil || err != nil {
 		return nil, nil, err
 	}
-	stateDb, err := b.eth.BlockChain().StateAt(header.Root)
+	stateDb, err := b.entropy.BlockChain().StateAt(header.Root)
 	return stateDb, header, err
 }
 
 func (b *EthAPIBackend) GetBlock(ctx context.Context, hash common.Hash) (*model.Block, error) {
-	return b.eth.blockchain.GetBlockByHash(hash), nil
+	return b.entropy.blockchain.GetBlockByHash(hash), nil
 }
 
 func (b *EthAPIBackend) GetReceipts(ctx context.Context, hash common.Hash) (model.Receipts, error) {
-	if number := mapper.ReadHeaderNumber(b.eth.chainDb, hash); number != nil {
-		return mapper.ReadReceipts(b.eth.chainDb, hash, *number), nil
+	if number := mapper.ReadHeaderNumber(b.entropy.chainDb, hash); number != nil {
+		return mapper.ReadReceipts(b.entropy.chainDb, hash, *number), nil
 	}
 	return nil, nil
 }
 
 func (b *EthAPIBackend) GetLogs(ctx context.Context, hash common.Hash) ([][]*model.Log, error) {
-	number := mapper.ReadHeaderNumber(b.eth.chainDb, hash)
+	number := mapper.ReadHeaderNumber(b.entropy.chainDb, hash)
 	if number == nil {
 		return nil, nil
 	}
-	receipts := mapper.ReadReceipts(b.eth.chainDb, hash, *number)
+	receipts := mapper.ReadReceipts(b.entropy.chainDb, hash, *number)
 	if receipts == nil {
 		return nil, nil
 	}
@@ -115,43 +115,43 @@ func (b *EthAPIBackend) GetLogs(ctx context.Context, hash common.Hash) ([][]*mod
 }
 
 func (b *EthAPIBackend) GetTd(blockHash common.Hash) *big.Int {
-	return b.eth.blockchain.GetTdByHash(blockHash)
+	return b.entropy.blockchain.GetTdByHash(blockHash)
 }
 
 func (b *EthAPIBackend) GetEVM(ctx context.Context, msg blockchain.Message, state *state.StateDB, header *model.Header, vmCfg evm.Config) (*evm.EVM, func() error, error) {
 	state.SetBalance(msg.From(), mathutil.MaxBig256)
 	vmError := func() error { return nil }
 
-	vmContext := blockchain.NewEVMContext(msg, header, b.eth.BlockChain(), nil)
-	return evm.NewEVM(vmContext, state, b.eth.chainConfig, vmCfg), vmError, nil
+	vmContext := blockchain.NewEVMContext(msg, header, b.entropy.BlockChain(), nil)
+	return evm.NewEVM(vmContext, state, b.entropy.chainConfig, vmCfg), vmError, nil
 }
 
 func (b *EthAPIBackend) SubscribeRemovedLogsEvent(ch chan<- blockchain.RemovedLogsEvent) event.Subscription {
-	return b.eth.BlockChain().SubscribeRemovedLogsEvent(ch)
+	return b.entropy.BlockChain().SubscribeRemovedLogsEvent(ch)
 }
 
 func (b *EthAPIBackend) SubscribeChainEvent(ch chan<- blockchain.ChainEvent) event.Subscription {
-	return b.eth.BlockChain().SubscribeChainEvent(ch)
+	return b.entropy.BlockChain().SubscribeChainEvent(ch)
 }
 
 func (b *EthAPIBackend) SubscribeChainHeadEvent(ch chan<- blockchain.ChainHeadEvent) event.Subscription {
-	return b.eth.BlockChain().SubscribeChainHeadEvent(ch)
+	return b.entropy.BlockChain().SubscribeChainHeadEvent(ch)
 }
 
 func (b *EthAPIBackend) SubscribeChainSideEvent(ch chan<- blockchain.ChainSideEvent) event.Subscription {
-	return b.eth.BlockChain().SubscribeChainSideEvent(ch)
+	return b.entropy.BlockChain().SubscribeChainSideEvent(ch)
 }
 
 func (b *EthAPIBackend) SubscribeLogsEvent(ch chan<- []*model.Log) event.Subscription {
-	return b.eth.BlockChain().SubscribeLogsEvent(ch)
+	return b.entropy.BlockChain().SubscribeLogsEvent(ch)
 }
 
 func (b *EthAPIBackend) SendTx(ctx context.Context, signedTx *model.Transaction) error {
-	return b.eth.txPool.AddLocal(signedTx)
+	return b.entropy.txPool.AddLocal(signedTx)
 }
 
 func (b *EthAPIBackend) GetPoolTransactions() (model.Transactions, error) {
-	pending, err := b.eth.txPool.Pending()
+	pending, err := b.entropy.txPool.Pending()
 	if err != nil {
 		return nil, err
 	}
@@ -163,31 +163,31 @@ func (b *EthAPIBackend) GetPoolTransactions() (model.Transactions, error) {
 }
 
 func (b *EthAPIBackend) GetPoolTransaction(hash common.Hash) *model.Transaction {
-	return b.eth.txPool.Get(hash)
+	return b.entropy.txPool.Get(hash)
 }
 
 func (b *EthAPIBackend) GetPoolNonce(ctx context.Context, addr common.Address) (uint64, error) {
-	return b.eth.txPool.State().GetNonce(addr), nil
+	return b.entropy.txPool.State().GetNonce(addr), nil
 }
 
 func (b *EthAPIBackend) Stats() (pending int, queued int) {
-	return b.eth.txPool.Stats()
+	return b.entropy.txPool.Stats()
 }
 
 func (b *EthAPIBackend) TxPoolContent() (map[common.Address]model.Transactions, map[common.Address]model.Transactions) {
-	return b.eth.TxPool().Content()
+	return b.entropy.TxPool().Content()
 }
 
 func (b *EthAPIBackend) SubscribeNewTxsEvent(ch chan<- blockchain.NewTxsEvent) event.Subscription {
-	return b.eth.TxPool().SubscribeNewTxsEvent(ch)
+	return b.entropy.TxPool().SubscribeNewTxsEvent(ch)
 }
 
 func (b *EthAPIBackend) Downloader() *downloader.Downloader {
-	return b.eth.Downloader()
+	return b.entropy.Downloader()
 }
 
 func (b *EthAPIBackend) ProtocolVersion() int {
-	return b.eth.EthVersion()
+	return b.entropy.EthVersion()
 }
 
 func (b *EthAPIBackend) SuggestPrice(ctx context.Context) (*big.Int, error) {
@@ -195,24 +195,24 @@ func (b *EthAPIBackend) SuggestPrice(ctx context.Context) (*big.Int, error) {
 }
 
 func (b *EthAPIBackend) ChainDb() database.Database {
-	return b.eth.ChainDb()
+	return b.entropy.ChainDb()
 }
 
 func (b *EthAPIBackend) EventMux() *event.TypeMux {
-	return b.eth.EventMux()
+	return b.entropy.EventMux()
 }
 
 func (b *EthAPIBackend) AccountManager() *account.Manager {
-	return b.eth.AccountManager()
+	return b.entropy.AccountManager()
 }
 
 func (b *EthAPIBackend) BloomStatus() (uint64, uint64) {
-	sections, _, _ := b.eth.bloomIndexer.Sections()
+	sections, _, _ := b.entropy.bloomIndexer.Sections()
 	return config.BloomBitsBlocks, sections
 }
 
 func (b *EthAPIBackend) ServiceFilter(ctx context.Context, session *bloombits.MatcherSession) {
 	for i := 0; i < bloomFilterThreads; i++ {
-		go session.Multiplex(bloomRetrievalBatch, bloomRetrievalWait, b.eth.bloomRequests)
+		go session.Multiplex(bloomRetrievalBatch, bloomRetrievalWait, b.entropy.bloomRequests)
 	}
 }

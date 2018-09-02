@@ -30,7 +30,7 @@ type Miner struct {
 	worker *worker
 
 	coinbase common.Address
-	eth      Backend
+	entropy      Backend
 	engine   consensus.Engine
 	exitCh   chan struct{}
 
@@ -38,13 +38,13 @@ type Miner struct {
 	shouldStart int32 // should start indicates whether we should start after sync
 }
 
-func New(eth Backend, config *config.ChainConfig, mux *event.TypeMux, engine consensus.Engine) *Miner {
+func New(entropy Backend, config *config.ChainConfig, mux *event.TypeMux, engine consensus.Engine) *Miner {
 	miner := &Miner{
-		eth:      eth,
+		entropy:      entropy,
 		mux:      mux,
 		engine:   engine,
 		exitCh:   make(chan struct{}),
-		worker:   newWorker(config, engine, eth, mux),
+		worker:   newWorker(config, engine, entropy, mux),
 		canStart: 1,
 	}
 	go miner.update()

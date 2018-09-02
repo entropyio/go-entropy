@@ -161,7 +161,7 @@ type task struct {
 type worker struct {
 	config *config.ChainConfig
 	engine consensus.Engine
-	eth    Backend
+	entropy    Backend
 	chain  *blockchain.BlockChain
 
 	// Subscriptions
@@ -200,15 +200,15 @@ type worker struct {
 	fullTaskHook func()           // Method to call before pushing the full sealing task
 }
 
-func newWorker(config *config.ChainConfig, engine consensus.Engine, eth Backend, mux *event.TypeMux) *worker {
+func newWorker(config *config.ChainConfig, engine consensus.Engine, entropy Backend, mux *event.TypeMux) *worker {
 	worker := &worker{
 		config:         config,
 		engine:         engine,
-		eth:            eth,
+		entropy:            entropy,
 		mux:            mux,
-		chain:          eth.BlockChain(),
+		chain:          entropy.BlockChain(),
 		possibleUncles: make(map[common.Hash]*model.Block),
-		unconfirmed:    newUnconfirmedBlocks(eth.BlockChain(), miningLogAtDepth),
+		unconfirmed:    newUnconfirmedBlocks(entropy.BlockChain(), miningLogAtDepth),
 		txsCh:          make(chan blockchain.NewTxsEvent, txChanSize),
 		chainHeadCh:    make(chan blockchain.ChainHeadEvent, chainHeadChanSize),
 		chainSideCh:    make(chan blockchain.ChainSideEvent, chainSideChanSize),
@@ -218,10 +218,10 @@ func newWorker(config *config.ChainConfig, engine consensus.Engine, eth Backend,
 		exitCh:         make(chan struct{}),
 	}
 	// Subscribe NewTxsEvent for tx pool
-	worker.txsSub = eth.TxPool().SubscribeNewTxsEvent(worker.txsCh)
+	worker.txsSub = entropy.TxPool().SubscribeNewTxsEvent(worker.txsCh)
 	// Subscribe events for blockchain
-	worker.chainHeadSub = eth.BlockChain().SubscribeChainHeadEvent(worker.chainHeadCh)
-	worker.chainSideSub = eth.BlockChain().SubscribeChainSideEvent(worker.chainSideCh)
+	worker.chainHeadSub = entropy.BlockChain().SubscribeChainHeadEvent(worker.chainHeadCh)
+	worker.chainSideSub = entropy.BlockChain().SubscribeChainSideEvent(worker.chainSideCh)
 
 	go worker.mainLoop()
 	go worker.resultLoop()
@@ -639,7 +639,7 @@ func (w *worker) commitNewWork() {
 	w.commit(uncles, nil, false, tstart)
 
 	// Fill the block with all available pending transactions.
-	pending, err := w.eth.TxPool().Pending()
+	pending, err := w.entropy.TxPool().Pending()
 	if err != nil {
 		log.Error("Failed to fetch pending transactions", "err", err)
 		return

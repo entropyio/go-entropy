@@ -16,7 +16,7 @@ func ReadDatabaseVersion(db database.DBReader) int {
 	enc, _ := db.Get(databaseVerisionKey)
 	rlputil.DecodeBytes(enc, &version)
 
-	mapperLog.Debugf("ReadDatabaseVersion: key=%s, key=%X, version=%d", databaseVerisionKey, databaseVerisionKey, version)
+	//mapperLog.Debugf("ReadDatabaseVersion: key=%s, key=%X, version=%d", databaseVerisionKey, databaseVerisionKey, version)
 	return version
 }
 
@@ -26,7 +26,7 @@ func WriteDatabaseVersion(db database.DBWriter, version int) {
 	if err := db.Put(databaseVerisionKey, enc); err != nil {
 		mapperLog.Critical("Failed to store the database version", "err", err)
 	}
-	mapperLog.Debugf("WriteDatabaseVersion: key=%s, key=%X, version=%d", databaseVerisionKey, databaseVerisionKey, version)
+	//mapperLog.Debugf("WriteDatabaseVersion: key=%s, key=%X, version=%d", databaseVerisionKey, databaseVerisionKey, version)
 }
 
 // ReadChainConfig retrieves the consensus settings based on the given genesis hash.

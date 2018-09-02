@@ -20,10 +20,10 @@ const (
 var DefaultConfig = Config{
 	DataDir:          DefaultDataDir(),
 	HTTPPort:         DefaultHTTPPort,
-	HTTPModules:      []string{"net", "web3"},
+	HTTPModules:      []string{"net", "entropy3"},
 	HTTPVirtualHosts: []string{"localhost"},
 	WSPort:           DefaultWSPort,
-	WSModules:        []string{"net", "web3"},
+	WSModules:        []string{"net", "entropy3"},
 	P2P: p2p.Config{
 		ListenAddr: ":60606",
 		MaxPeers:   25,

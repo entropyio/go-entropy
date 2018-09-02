@@ -2,6 +2,7 @@ package console
 
 import (
 	"fmt"
+	"github.com/entropyio/go-entropy/cmd/console/deps"
 	"github.com/entropyio/go-entropy/logger"
 	"github.com/entropyio/go-entropy/rpc"
 	"github.com/mattn/go-colorable"
@@ -106,19 +107,107 @@ func (c *Console) init(preload []string) error {
 	consoleObj.Object().Set("log", c.consoleOutput)
 	consoleObj.Object().Set("error", c.consoleOutput)
 
-	// load entropy console command. call jEntropy.send to send RPC request
-	if err := c.jsre.Compile("entropy.js", Entropy_JS); err != nil {
-		return fmt.Errorf("entropy.js compile error: %v", err)
-	}
-
 	// Load all the internal utility JavaScript libraries
-	//if err := c.jsre.Compile("bignumber.js", BigNumber_JS); err != nil {
-	//	return fmt.Errorf("bignumber.js: %v", err)
-	//}
-	//if err := c.jsre.Compile("web3.js", Web3_JS); err != nil {
-	//	return fmt.Errorf("web3.js: %v", err)
-	//}
+	if err := c.jsre.Compile("bignumber.js", BigNumber_JS); err != nil {
+		return fmt.Errorf("bignumber.js: %v", err)
+	}
+	if err := c.jsre.Compile("entropy3.js", Entropy3_JS); err != nil {
+		return fmt.Errorf("entropy3.js: %v", err)
+	}
+	if _, err := c.jsre.Run("var Entropy3 = require('entropy3');"); err != nil {
+		return fmt.Errorf("entropy3 require: %v", err)
+	}
+	if _, err := c.jsre.Run("var entropy3 = new Entropy3(jEntropy);"); err != nil {
+		return fmt.Errorf("entropy3 provider: %v", err)
+	}
+	// Load the supported APIs into the JavaScript runtime environment
+	apis, err := c.client.SupportedModules()
+	if err != nil {
+		return fmt.Errorf("api modules: %v", err)
+	}
+	flatten := "var entropy = entropy3.entropy; var personal = entropy3.personal; "
+	for api := range apis {
+		if api == "entropy3" {
+			continue // manually mapped or ignore
+		}
+		if file, ok := deps.Modules[api]; ok {
+			// Load our extension for the module.
+			if err = c.jsre.Compile(fmt.Sprintf("%s.js", api), file); err != nil {
+				return fmt.Errorf("%s.js: %v", api, err)
+			}
+			flatten += fmt.Sprintf("var %s = entropy3.%s; ", api, api)
+		} else if obj, err := c.jsre.Run("entropy3." + api); err == nil && obj.IsObject() {
+			// Enable entropy3.js built-in extension if available.
+			flatten += fmt.Sprintf("var %s = entropy3.%s; ", api, api)
+		}
+	}
+	if _, err = c.jsre.Run(flatten); err != nil {
+		return fmt.Errorf("namespace flattening: %v", err)
+	}
+	// Initialize the global name register (disabled for now)
+	//c.jsre.Run(`var GlobalRegistrar = entropy.contract(` + registrar.GlobalRegistrarAbi + `);   registrar = GlobalRegistrar.at("` + registrar.GlobalRegistrarAddr + `");`)
 
+	// If the console is in interactive mode, instrument password related methods to query the user
+	if c.prompter != nil {
+		// Retrieve the account management object to instrument
+		personal, err := c.jsre.Get("personal")
+		if err != nil {
+			return err
+		}
+		// Override the openWallet, unlockAccount, newAccount and sign methods since
+		// these require user interaction. Assign these method in the Console the
+		// original entropy3 callbacks. These will be called by the jEntropy.* methods after
+		// they got the password from the user and send the original entropy3 request to
+		// the backend.
+		if obj := personal.Object(); obj != nil { // make sure the personal api is enabled over the interface
+			if _, err = c.jsre.Run(`jEntropy.openWallet = personal.openWallet;`); err != nil {
+				return fmt.Errorf("personal.openWallet: %v", err)
+			}
+			if _, err = c.jsre.Run(`jEntropy.unlockAccount = personal.unlockAccount;`); err != nil {
+				return fmt.Errorf("personal.unlockAccount: %v", err)
+			}
+			if _, err = c.jsre.Run(`jEntropy.newAccount = personal.newAccount;`); err != nil {
+				return fmt.Errorf("personal.newAccount: %v", err)
+			}
+			if _, err = c.jsre.Run(`jEntropy.sign = personal.sign;`); err != nil {
+				return fmt.Errorf("personal.sign: %v", err)
+			}
+			obj.Set("openWallet", bridge.OpenWallet)
+			obj.Set("unlockAccount", bridge.UnlockAccount)
+			obj.Set("newAccount", bridge.NewAccount)
+			obj.Set("sign", bridge.Sign)
+		}
+	}
+	// The admin.sleep and admin.sleepBlocks are offered by the console and not by the RPC layer.
+	admin, err := c.jsre.Get("admin")
+	if err != nil {
+		return err
+	}
+	if obj := admin.Object(); obj != nil { // make sure the admin api is enabled over the interface
+		obj.Set("sleepBlocks", bridge.SleepBlocks)
+		obj.Set("sleep", bridge.Sleep)
+		obj.Set("clearHistory", c.clearHistory)
+	}
+	// Preload any JavaScript files before starting the console
+	for _, path := range preload {
+		if err := c.jsre.Exec(path); err != nil {
+			failure := err.Error()
+			if ottoErr, ok := err.(*otto.Error); ok {
+				failure = ottoErr.String()
+			}
+			return fmt.Errorf("%s: %v", path, failure)
+		}
+	}
+	// Configure the console's input prompter for scrollback and tab completion
+	if c.prompter != nil {
+		if content, err := ioutil.ReadFile(c.histPath); err != nil {
+			c.prompter.SetHistory(nil)
+		} else {
+			c.history = strings.Split(string(content), "\n")
+			c.prompter.SetHistory(c.history)
+		}
+		c.prompter.SetWordCompleter(c.AutoCompleteInput)
+	}
 	return nil
 }
 
@@ -151,15 +240,15 @@ func (c *Console) AutoCompleteInput(line string, pos int) (string, []string, str
 		return "", nil, ""
 	}
 	// Chunck data to relevant part for autocompletion
-	// E.g. in case of nested lines eth.getBalance(eth.coinb<tab><tab>
+	// E.g. in case of nested lines entropy.getBalance(entropy.coinb<tab><tab>
 	start := pos - 1
 	for ; start > 0; start-- {
 		// Skip all methods and namespaces (i.e. including the dot)
 		if line[start] == '.' || (line[start] >= 'a' && line[start] <= 'z') || (line[start] >= 'A' && line[start] <= 'Z') {
 			continue
 		}
-		// Handle web3 in a special way (i.e. other numbers aren't auto completed)
-		if start >= 3 && line[start-3:start] == "web3" {
+		// Handle entropy3 in a special way (i.e. other numbers aren't auto completed)
+		if start >= 3 && line[start-3:start] == "entropy3" {
 			start -= 3
 			continue
 		}
@@ -176,7 +265,7 @@ func (c *Console) Welcome() {
 	// Print some generic Entropy metadata
 	fmt.Fprintf(c.printer, "Welcome to the Entropy JavaScript console!\n\n")
 
-	//console.logger("instance: " + web3.version.node);
+	//console.logger("instance: " + entropy3.version.node);
 
 	c.jsre.Run(`
 		console.log(entropy.version());

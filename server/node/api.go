@@ -426,23 +426,23 @@ func (api *PublicDebugAPI) Metrics(raw bool) (map[string]interface{}, error) {
 	return counters, nil
 }
 
-// PublicWeb3API offers helper utils
-type PublicWeb3API struct {
+// PublicEntropy3API offers helper utils
+type PublicEntropy3API struct {
 	stack *Node
 }
 
-// NewPublicWeb3API creates a new Web3Service instance
-func NewPublicWeb3API(stack *Node) *PublicWeb3API {
-	return &PublicWeb3API{stack}
+// NewPublicEntropy3API creates a new Entropy3Service instance
+func NewPublicEntropy3API(stack *Node) *PublicEntropy3API {
+	return &PublicEntropy3API{stack}
 }
 
 // ClientVersion returns the node name
-func (s *PublicWeb3API) ClientVersion() string {
+func (s *PublicEntropy3API) ClientVersion() string {
 	return s.stack.Server().Name
 }
 
 // Sha3 applies the entropy sha3 implementation on the input.
 // It assumes the input is hex encoded.
-func (s *PublicWeb3API) Sha3(input hexutil.Bytes) hexutil.Bytes {
+func (s *PublicEntropy3API) Sha3(input hexutil.Bytes) hexutil.Bytes {
 	return crypto.Keccak256(input)
 }

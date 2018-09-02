@@ -106,7 +106,7 @@ func New(ctx *node.ServiceContext, configObj *Config) (*Entropy, error) {
 	}
 	log.Info("Initialised chain configuration.", chainConfig)
 
-	eth := &Entropy{
+	entropy := &Entropy{
 		config:         configObj,
 		chainDb:        chainDb,
 		chainConfig:    chainConfig,
@@ -134,37 +134,37 @@ func New(ctx *node.ServiceContext, configObj *Config) (*Entropy, error) {
 		vmConfig    = evm.Config{EnablePreimageRecording: configObj.EnablePreimageRecording}
 		cacheConfig = &blockchain.CacheConfig{Disabled: configObj.NoPruning, TrieNodeLimit: configObj.TrieCache, TrieTimeLimit: configObj.TrieTimeout}
 	)
-	eth.blockchain, err = blockchain.NewBlockChain(chainDb, cacheConfig, eth.chainConfig, eth.engine, vmConfig)
+	entropy.blockchain, err = blockchain.NewBlockChain(chainDb, cacheConfig, entropy.chainConfig, entropy.engine, vmConfig)
 	if err != nil {
 		return nil, err
 	}
 	// Rewind the chain in case of an incompatible config upgrade.
 	if compat, ok := genesisErr.(*config.ConfigCompatError); ok {
 		log.Warning("Rewinding chain to upgrade configuration", "err", compat)
-		eth.blockchain.SetHead(compat.RewindTo)
+		entropy.blockchain.SetHead(compat.RewindTo)
 		mapper.WriteChainConfig(chainDb, genesisHash, chainConfig)
 	}
-	eth.bloomIndexer.Start(eth.blockchain)
+	entropy.bloomIndexer.Start(entropy.blockchain)
 
 	if configObj.TxPool.Journal != "" {
 		configObj.TxPool.Journal = ctx.ResolvePath(configObj.TxPool.Journal)
 	}
-	eth.txPool = blockchain.NewTxPool(configObj.TxPool, eth.chainConfig, eth.blockchain)
+	entropy.txPool = blockchain.NewTxPool(configObj.TxPool, entropy.chainConfig, entropy.blockchain)
 
-	if eth.protocolManager, err = NewProtocolManager(eth.chainConfig, configObj.SyncMode, configObj.NetworkId, eth.eventMux, eth.txPool, eth.engine, eth.blockchain, chainDb); err != nil {
+	if entropy.protocolManager, err = NewProtocolManager(entropy.chainConfig, configObj.SyncMode, configObj.NetworkId, entropy.eventMux, entropy.txPool, entropy.engine, entropy.blockchain, chainDb); err != nil {
 		return nil, err
 	}
-	eth.miner = miner.New(eth, eth.chainConfig, eth.EventMux(), eth.engine)
-	eth.miner.SetExtra(makeExtraData(configObj.ExtraData))
+	entropy.miner = miner.New(entropy, entropy.chainConfig, entropy.EventMux(), entropy.engine)
+	entropy.miner.SetExtra(makeExtraData(configObj.ExtraData))
 
-	eth.APIBackend = &EthAPIBackend{eth, nil}
+	entropy.APIBackend = &EthAPIBackend{entropy, nil}
 	gpoParams := configObj.GPO
 	if gpoParams.Default == nil {
 		gpoParams.Default = configObj.GasPrice
 	}
-	eth.APIBackend.gpo = gasprice.NewOracle(eth.APIBackend, gpoParams)
+	entropy.APIBackend.gpo = gasprice.NewOracle(entropy.APIBackend, gpoParams)
 
-	return eth, nil
+	return entropy, nil
 }
 
 func makeExtraData(extra []byte) []byte {

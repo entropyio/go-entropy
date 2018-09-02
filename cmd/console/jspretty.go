@@ -67,7 +67,7 @@ func (ctx ppctx) indent(level int) string {
 }
 
 func (ctx ppctx) printValue(v otto.Value, level int, inArray bool) {
-	fmt.Fprint(ctx.w, "[result]: ")
+	//fmt.Fprint(ctx.w, "[result]: ")
 	switch {
 	case v.IsObject():
 		ctx.printObject(v.Object(), level, inArray)

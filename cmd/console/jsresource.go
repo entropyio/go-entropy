@@ -15,9 +15,9 @@ import (
 )
 
 var (
-	//BigNumber_JS = deps.MustAsset("bignumber.js")
-	//Web3_JS      = deps.MustAsset("web3.js")
-	Entropy_JS = deps.MustAsset("entropy.js")
+	BigNumber_JS = deps.MustAsset("bignumber.js")
+	Entropy3_JS      = deps.MustAsset("entropy3.js")
+	//Entropy3_JS = deps.MustAsset("entropy3.js")
 )
 
 /*

@@ -54,7 +54,7 @@ type blockChain interface {
 // chain statistics up to a monitoring server.
 type Service struct {
 	server *p2p.Server      // Peer-to-peer server to retrieve networking infos
-	eth    *entropy.Entropy // Full Entropy service if monitoring a full node
+	entropy    *entropy.Entropy // Full Entropy service if monitoring a full node
 	//les    *les.LightEntropy // Light Entropy service if monitoring a light node
 	engine consensus.Engine // Consensus engine to retrieve variadic block fields
 
@@ -82,7 +82,7 @@ func New(url string, ethServ *entropy.Entropy /*lesServ *les.LightEntropy*/) (*S
 		//engine = lesServ.Engine()
 	}
 	return &Service{
-		eth: ethServ,
+		entropy: ethServ,
 		//les:    lesServ,
 		engine: engine,
 		node:   parts[1],
@@ -122,9 +122,9 @@ func (s *Service) loop() {
 	// Subscribe to chain events to execute updates on
 	var blockchainObj blockChain
 	var txpool txPool
-	if s.eth != nil {
-		blockchainObj = s.eth.BlockChain()
-		txpool = s.eth.TxPool()
+	if s.entropy != nil {
+		blockchainObj = s.entropy.BlockChain()
+		txpool = s.entropy.TxPool()
 	} else {
 		//blockchain = s.les.BlockChain()
 		//txpool = s.les.TxPool()
@@ -511,13 +511,13 @@ func (s *Service) assembleBlockStats(block *model.Block) *blockStats {
 		txs    []txStats
 		uncles []*model.Header
 	)
-	if s.eth != nil {
+	if s.entropy != nil {
 		// Full nodes have all needed information available
 		if block == nil {
-			block = s.eth.BlockChain().CurrentBlock()
+			block = s.entropy.BlockChain().CurrentBlock()
 		}
 		header = block.Header()
-		td = s.eth.BlockChain().GetTd(header.Hash(), header.Number.Uint64())
+		td = s.entropy.BlockChain().GetTd(header.Hash(), header.Number.Uint64())
 
 		txs = make([]txStats, len(block.Transactions()))
 		for i, tx := range block.Transactions() {
@@ -565,8 +565,8 @@ func (s *Service) reportHistory(conn *websocket.Conn, list []uint64) error {
 	} else {
 		// No indexes requested, send back the top ones
 		var head int64
-		if s.eth != nil {
-			head = s.eth.BlockChain().CurrentHeader().Number.Int64()
+		if s.entropy != nil {
+			head = s.entropy.BlockChain().CurrentHeader().Number.Int64()
 		} else {
 			//head = s.les.BlockChain().CurrentHeader().Number.Int64()
 		}
@@ -583,8 +583,8 @@ func (s *Service) reportHistory(conn *websocket.Conn, list []uint64) error {
 	for i, number := range indexes {
 		// Retrieve the next block if it's known to us
 		var block *model.Block
-		if s.eth != nil {
-			block = s.eth.BlockChain().GetBlockByNumber(number)
+		if s.entropy != nil {
+			block = s.entropy.BlockChain().GetBlockByNumber(number)
 		} else {
 			//if header := s.les.BlockChain().GetHeaderByNumber(number); header != nil {
 			//	block = model.NewBlockWithHeader(header)
@@ -625,8 +625,8 @@ type pendStats struct {
 func (s *Service) reportPending(conn *websocket.Conn) error {
 	// Retrieve the pending count from the local blockchain
 	var pending int
-	if s.eth != nil {
-		pending, _ = s.eth.TxPool().Stats()
+	if s.entropy != nil {
+		pending, _ = s.entropy.TxPool().Stats()
 	} else {
 		//pending = s.les.TxPool().Stats()
 	}
@@ -666,14 +666,14 @@ func (s *Service) reportStats(conn *websocket.Conn) error {
 		syncing  bool
 		gasprice int
 	)
-	if s.eth != nil {
-		mining = s.eth.Miner().Mining()
-		hashrate = int(s.eth.Miner().HashRate())
+	if s.entropy != nil {
+		mining = s.entropy.Miner().Mining()
+		hashrate = int(s.entropy.Miner().HashRate())
 
-		sync := s.eth.Downloader().Progress()
-		syncing = s.eth.BlockChain().CurrentHeader().Number.Uint64() >= sync.HighestBlock
+		sync := s.entropy.Downloader().Progress()
+		syncing = s.entropy.BlockChain().CurrentHeader().Number.Uint64() >= sync.HighestBlock
 
-		price, _ := s.eth.APIBackend.SuggestPrice(context.Background())
+		price, _ := s.entropy.APIBackend.SuggestPrice(context.Background())
 		gasprice = int(price.Uint64())
 	} else {
 		//sync := s.les.Downloader().Progress()

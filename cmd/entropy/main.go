@@ -36,7 +36,7 @@ func init() {
 
 	sort.Sort(cli.CommandsByName(app.Commands))
 
-	app.Flags = append(app.Flags, utils.NodeFlags...)
+	app.Flags = append(append(app.Flags, utils.NodeFlags...), utils.RpcFlags...)
 
 	app.Before = func(context *cli.Context) error {
 		log.Debug("call app.Before....")
