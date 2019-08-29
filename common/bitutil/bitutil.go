@@ -9,7 +9,7 @@ const wordSize = int(unsafe.Sizeof(uintptr(0)))
 const supportsUnaligned = runtime.GOARCH == "386" || runtime.GOARCH == "amd64" || runtime.GOARCH == "ppc64" || runtime.GOARCH == "ppc64le" || runtime.GOARCH == "s390x"
 
 // XORBytes xors the bytes in a and b. The destination is assumed to have enough
-// entropy. Returns the number of bytes xor'd.
+// space. Returns the number of bytes xor'd.
 func XORBytes(dst, a, b []byte) int {
 	if supportsUnaligned {
 		return fastXORBytes(dst, a, b)
@@ -53,7 +53,7 @@ func safeXORBytes(dst, a, b []byte) int {
 }
 
 // ANDBytes ands the bytes in a and b. The destination is assumed to have enough
-// entropy. Returns the number of bytes and'd.
+// space. Returns the number of bytes and'd.
 func ANDBytes(dst, a, b []byte) int {
 	if supportsUnaligned {
 		return fastANDBytes(dst, a, b)
@@ -97,7 +97,7 @@ func safeANDBytes(dst, a, b []byte) int {
 }
 
 // ORBytes ors the bytes in a and b. The destination is assumed to have enough
-// entropy. Returns the number of bytes or'd.
+// space. Returns the number of bytes or'd.
 func ORBytes(dst, a, b []byte) int {
 	if supportsUnaligned {
 		return fastORBytes(dst, a, b)

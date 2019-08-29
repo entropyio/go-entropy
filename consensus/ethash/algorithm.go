@@ -13,7 +13,8 @@ import (
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/bitutil"
 	"github.com/entropyio/go-entropy/common/crypto"
-	"github.com/entropyio/go-entropy/common/crypto/sha3"
+
+	"golang.org/x/crypto/sha3"
 )
 
 const (
@@ -105,7 +106,7 @@ func seedHash(block uint64) []byte {
 	if block < epochLength {
 		return seed
 	}
-	keccak256 := makeHasher(sha3.NewKeccak256())
+	keccak256 := makeHasher(sha3.NewLegacyKeccak256())
 	for i := 0; i < int(block/epochLength); i++ {
 		keccak256(seed, seed)
 	}
@@ -157,7 +158,7 @@ func generateCache(dest []uint32, epoch uint64, seed []byte) {
 		}
 	}()
 	// Create a hasher to reuse between invocations
-	keccak512 := makeHasher(sha3.NewKeccak512())
+	keccak512 := makeHasher(sha3.NewLegacyKeccak512())
 
 	// Sequentially produce the initial dataset
 	keccak512(cache, seed)
@@ -268,7 +269,7 @@ func generateDataset(dest []uint32, epoch uint64, cache []uint32) {
 
 	// Generate the dataset on many goroutines since it takes a while
 	//threads := runtime.NumCPU()
-	threads := 1 // todo: 1 for test, delete
+	threads := 1 // FIXME: 1 for test, delete
 	size := uint64(len(dataset))
 
 	var pend sync.WaitGroup
@@ -280,7 +281,7 @@ func generateDataset(dest []uint32, epoch uint64, cache []uint32) {
 			defer pend.Done()
 
 			// Create a hasher to reuse between invocations
-			keccak512 := makeHasher(sha3.NewKeccak512())
+			keccak512 := makeHasher(sha3.NewLegacyKeccak512())
 
 			// Calculate the data segment this thread should generate
 			batch := uint32((size + hashBytes*uint64(threads) - 1) / (hashBytes * uint64(threads)))
@@ -354,7 +355,7 @@ func hashimoto(hash []byte, nonce uint64, size uint64, lookup func(index uint32)
 // in-memory cache) in order to produce our final value for a particular header
 // hash and nonce.
 func hashimotoLight(size uint64, cache []uint32, hash []byte, nonce uint64) ([]byte, []byte) {
-	keccak512 := makeHasher(sha3.NewKeccak512())
+	keccak512 := makeHasher(sha3.NewLegacyKeccak512())
 
 	lookup := func(index uint32) []uint32 {
 		rawData := generateDatasetItem(cache, index, keccak512)

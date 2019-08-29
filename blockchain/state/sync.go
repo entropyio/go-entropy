@@ -10,7 +10,7 @@ import (
 )
 
 // NewStateSync create a new state trie download scheduler.
-func NewStateSync(root common.Hash, database database.DBReader) *trie.Sync {
+func NewStateSync(root common.Hash, database database.KeyValueReader, bloom *trie.SyncBloom) *trie.Sync {
 	var syncer *trie.Sync
 	callback := func(leaf []byte, parent common.Hash) error {
 		var obj Account
@@ -21,6 +21,6 @@ func NewStateSync(root common.Hash, database database.DBReader) *trie.Sync {
 		syncer.AddRawEntry(common.BytesToHash(obj.CodeHash), 64, parent)
 		return nil
 	}
-	syncer = trie.NewSync(root, database, callback)
+	syncer = trie.NewSync(root, database, callback, bloom)
 	return syncer
 }

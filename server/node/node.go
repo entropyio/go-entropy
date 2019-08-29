@@ -11,12 +11,16 @@ import (
 	"sync"
 
 	"github.com/entropyio/go-entropy/account"
-	"github.com/entropyio/go-entropy/database"
+
 	"github.com/entropyio/go-entropy/event"
 	"github.com/entropyio/go-entropy/logger"
 	"github.com/entropyio/go-entropy/rpc"
 	"github.com/entropyio/go-entropy/server/p2p"
-	"github.com/prometheus/prometheus/util/flock"
+
+	"github.com/entropyio/go-entropy/blockchain/mapper"
+	"github.com/entropyio/go-entropy/database"
+	"github.com/op/go-logging"
+	"github.com/prometheus/tsdb/fileutil"
 )
 
 var log = logger.NewLogger("[node]")
@@ -27,8 +31,8 @@ type Node struct {
 	config   *Config
 	accman   *account.Manager
 
-	ephemeralKeystore string         // if non-empty, the key directory that will be removed by Stop
-	instanceDirLock   flock.Releaser // prevents concurrent use of instance directory
+	ephemeralKeystore string            // if non-empty, the key directory that will be removed by Stop
+	instanceDirLock   fileutil.Releaser // prevents concurrent use of instance directory
 
 	serverConfig p2p.Config
 	server       *p2p.Server // Currently running P2P networking layer
@@ -55,7 +59,7 @@ type Node struct {
 	stop chan struct{} // Channel to wait for termination notifications
 	lock sync.RWMutex
 
-	//log log.Logger
+	log *logging.Logger
 }
 
 // New creates a new P2P node, ready for protocol registration.
@@ -88,9 +92,9 @@ func New(conf *Config) (*Node, error) {
 	if err != nil {
 		return nil, err
 	}
-	//if conf.Logger == nil {
-	//	conf.Logger = log.New()
-	//}
+	if conf.Logger == nil {
+		conf.Logger = logger.NewLogger("[node]")
+	}
 	// Note: any interaction with Config that would create/touch files
 	// in the data directory or instance directory is delayed until Start.
 	return &Node{
@@ -102,8 +106,31 @@ func New(conf *Config) (*Node, error) {
 		httpEndpoint:      conf.HTTPEndpoint(),
 		wsEndpoint:        conf.WSEndpoint(),
 		eventmux:          new(event.TypeMux),
-		//log:               conf.Logger,
+		log:               conf.Logger,
 	}, nil
+}
+
+// Close stops the Node and releases resources acquired in
+// Node constructor New.
+func (n *Node) Close() error {
+	var errs []error
+
+	// Terminate all subsystems and collect any errors
+	if err := n.Stop(); err != nil && err != ErrNodeStopped {
+		errs = append(errs, err)
+	}
+	if err := n.accman.Close(); err != nil {
+		errs = append(errs, err)
+	}
+	// Report any errors that might have occurred
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return errs[0]
+	default:
+		return fmt.Errorf("%v", errs)
+	}
 }
 
 // Register injects a new service into the node's stack. The service created by
@@ -137,7 +164,7 @@ func (n *Node) Start() error {
 	n.serverConfig = n.config.P2P
 	n.serverConfig.PrivateKey = n.config.NodeKey()
 	n.serverConfig.Name = n.config.NodeName()
-	//n.serverConfig.Logger = n.log
+	n.serverConfig.Logger = n.log
 	if n.serverConfig.StaticNodes == nil {
 		n.serverConfig.StaticNodes = n.config.StaticNodes()
 	}
@@ -148,7 +175,7 @@ func (n *Node) Start() error {
 		n.serverConfig.NodeDatabase = n.config.NodeDB()
 	}
 	running := &p2p.Server{Config: n.serverConfig}
-	log.Infof("Starting peer-to-peer node instance: %s", n.serverConfig.Name)
+	n.log.Info("Starting peer-to-peer node", "instance", n.serverConfig.Name)
 
 	// Otherwise copy and specialize the P2P configuration
 	services := make(map[reflect.Type]Service)
@@ -182,7 +209,7 @@ func (n *Node) Start() error {
 		return convertFileLockError(err)
 	}
 	// Start each of the services
-	started := []reflect.Type{}
+	var started []reflect.Type
 	for kind, service := range services {
 		// Start the next service, stopping all previous upon failure
 		if err := service.Start(running); err != nil {
@@ -212,6 +239,11 @@ func (n *Node) Start() error {
 	return nil
 }
 
+// Config returns the configuration of node.
+func (n *Node) Config() *Config {
+	return n.config
+}
+
 func (n *Node) openDataDir() error {
 	if n.config.DataDir == "" {
 		return nil // ephemeral
@@ -223,7 +255,7 @@ func (n *Node) openDataDir() error {
 	}
 	// Lock the instance directory to prevent concurrent use by another instance as well as
 	// accidental use of the instance directory as a database.
-	release, _, err := flock.New(filepath.Join(instdir, "LOCK"))
+	release, _, err := fileutil.Flock(filepath.Join(instdir, "LOCK"))
 	if err != nil {
 		return convertFileLockError(err)
 	}
@@ -272,6 +304,7 @@ func (n *Node) startInProc(apis []rpc.API) error {
 		if err := handler.RegisterName(api.Namespace, api.Service); err != nil {
 			return err
 		}
+		n.log.Debug("InProc registered", "namespace", api.Namespace)
 	}
 	n.inprocHandler = handler
 	return nil
@@ -296,7 +329,7 @@ func (n *Node) startIPC(apis []rpc.API) error {
 	}
 	n.ipcListener = listener
 	n.ipcHandler = handler
-	log.Infof("IPC endpoint opened with url=%s", n.ipcEndpoint)
+	n.log.Info("IPC endpoint opened", "url", n.ipcEndpoint)
 	return nil
 }
 
@@ -306,7 +339,7 @@ func (n *Node) stopIPC() {
 		n.ipcListener.Close()
 		n.ipcListener = nil
 
-		log.Infof("IPC endpoint closed with endpoint=%s", n.ipcEndpoint)
+		n.log.Info("IPC endpoint closed", "url", n.ipcEndpoint)
 	}
 	if n.ipcHandler != nil {
 		n.ipcHandler.Stop()
@@ -324,7 +357,7 @@ func (n *Node) startHTTP(endpoint string, apis []rpc.API, modules []string, cors
 	if err != nil {
 		return err
 	}
-	log.Infof("HTTP endpoint opened with url=%s", fmt.Sprintf("http://%s", endpoint), "cors", strings.Join(cors, ","), "vhosts", strings.Join(vhosts, ","))
+	n.log.Info("HTTP endpoint opened", "url", fmt.Sprintf("http://%s", endpoint), "cors", strings.Join(cors, ","), "vhosts", strings.Join(vhosts, ","))
 	// All listeners booted successfully
 	n.httpEndpoint = endpoint
 	n.httpListener = listener
@@ -339,7 +372,7 @@ func (n *Node) stopHTTP() {
 		n.httpListener.Close()
 		n.httpListener = nil
 
-		log.Infof("HTTP endpoint closed with url=%s", fmt.Sprintf("http://%s", n.httpEndpoint))
+		n.log.Info("HTTP endpoint closed", "url", fmt.Sprintf("http://%s", n.httpEndpoint))
 	}
 	if n.httpHandler != nil {
 		n.httpHandler.Stop()
@@ -357,7 +390,7 @@ func (n *Node) startWS(endpoint string, apis []rpc.API, modules []string, wsOrig
 	if err != nil {
 		return err
 	}
-	log.Infof("WebSocket endpoint opened with url=%s", fmt.Sprintf("ws://%s", listener.Addr()))
+	n.log.Info("WebSocket endpoint opened", "url", fmt.Sprintf("ws://%s", listener.Addr()))
 	// All listeners booted successfully
 	n.wsEndpoint = endpoint
 	n.wsListener = listener
@@ -372,7 +405,7 @@ func (n *Node) stopWS() {
 		n.wsListener.Close()
 		n.wsListener = nil
 
-		log.Infof("WebSocket endpoint closed with url=%s", fmt.Sprintf("ws://%s", n.wsEndpoint))
+		n.log.Info("WebSocket endpoint closed", "url", fmt.Sprintf("ws://%s", n.wsEndpoint))
 	}
 	if n.wsHandler != nil {
 		n.wsHandler.Stop()
@@ -411,7 +444,7 @@ func (n *Node) Stop() error {
 	// Release instance directory lock.
 	if n.instanceDirLock != nil {
 		if err := n.instanceDirLock.Release(); err != nil {
-			log.Error("Can't release datadir lock", "err", err)
+			n.log.Error("Can't release datadir lock", "err", err)
 		}
 		n.instanceDirLock = nil
 	}
@@ -533,11 +566,23 @@ func (n *Node) IPCEndpoint() string {
 
 // HTTPEndpoint retrieves the current HTTP endpoint used by the protocol stack.
 func (n *Node) HTTPEndpoint() string {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	if n.httpListener != nil {
+		return n.httpListener.Addr().String()
+	}
 	return n.httpEndpoint
 }
 
 // WSEndpoint retrieves the current WS endpoint used by the protocol stack.
 func (n *Node) WSEndpoint() string {
+	n.lock.Lock()
+	defer n.lock.Unlock()
+
+	if n.wsListener != nil {
+		return n.wsListener.Addr().String()
+	}
 	return n.wsEndpoint
 }
 
@@ -550,11 +595,31 @@ func (n *Node) EventMux() *event.TypeMux {
 // OpenDatabase opens an existing database with the given name (or creates one if no
 // previous can be found) from within the node's instance directory. If the node is
 // ephemeral, a memory database is returned.
-func (n *Node) OpenDatabase(name string, cache, handles int) (database.Database, error) {
+func (n *Node) OpenDatabase(name string, cache, handles int, namespace string) (database.Database, error) {
 	if n.config.DataDir == "" {
-		return database.NewMemDatabase(), nil
+		return mapper.NewMemoryDatabase(), nil
 	}
-	return database.NewLDBDatabase(n.config.ResolvePath(name), cache, handles)
+	return mapper.NewLevelDBDatabase(n.config.ResolvePath(name), cache, handles, namespace)
+}
+
+// OpenDatabaseWithFreezer opens an existing database with the given name (or
+// creates one if no previous can be found) from within the node's data directory,
+// also attaching a chain freezer to it that moves ancient chain data from the
+// database to immutable append-only files. If the node is an ephemeral one, a
+// memory database is returned.
+func (n *Node) OpenDatabaseWithFreezer(name string, cache, handles int, freezer, namespace string) (database.Database, error) {
+	if n.config.DataDir == "" {
+		return mapper.NewMemoryDatabase(), nil
+	}
+	root := n.config.ResolvePath(name)
+
+	switch {
+	case freezer == "":
+		freezer = filepath.Join(root, "ancient")
+	case !filepath.IsAbs(freezer):
+		freezer = n.config.ResolvePath(freezer)
+	}
+	return mapper.NewLevelDBDatabaseWithFreezer(root, cache, handles, freezer, namespace)
 }
 
 // ResolvePath returns the absolute path of a resource in the instance directory.
@@ -575,14 +640,9 @@ func (n *Node) apis() []rpc.API {
 			Service:   NewPublicAdminAPI(n),
 			Public:    true,
 		}, {
-			Namespace: "debug",
+			Namespace: "web3",
 			Version:   "1.0",
-			Service:   NewPublicDebugAPI(n),
-			Public:    true,
-		}, {
-			Namespace: "entropy3",
-			Version:   "1.0",
-			Service:   NewPublicEntropy3API(n),
+			Service:   NewPublicWeb3API(n),
 			Public:    true,
 		},
 	}

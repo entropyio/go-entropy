@@ -354,8 +354,8 @@ func (f *formatState) format(v reflect.Value) {
 	case reflect.UnsafePointer, reflect.Chan, reflect.Func:
 		printHexPtr(f.fs, v.Pointer())
 
-		// There were not any other types at the time this code was written, but
-		// fall back to letting the default fmt package handle it if any get added.
+	// There were not any other types at the time this code was written, but
+	// fall back to letting the default fmt package handle it if any get added.
 	default:
 		format := f.buildDefaultFormat()
 		if v.CanInterface() {

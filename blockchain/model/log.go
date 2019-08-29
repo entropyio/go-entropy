@@ -31,7 +31,7 @@ type Log struct {
 	TxIndex uint `json:"transactionIndex" gencodec:"required"`
 	// hash of the block in which the transaction was included
 	BlockHash common.Hash `json:"blockHash"`
-	// index of the log in the receipt
+	// index of the log in the block
 	Index uint `json:"logIndex" gencodec:"required"`
 
 	// The Removed field is true if this log was reverted due to a chain reorganisation.
@@ -52,7 +52,11 @@ type rlpLog struct {
 	Data    []byte
 }
 
-type rlpStorageLog struct {
+// rlpStorageLog is the storage encoding of a log.
+type rlpStorageLog rlpLog
+
+// legacyRlpStorageLog is the previous storage encoding of a log including some redundant fields.
+type legacyRlpStorageLog struct {
 	Address     common.Address
 	Topics      []common.Hash
 	Data        []byte
@@ -85,31 +89,38 @@ type LogForStorage Log
 // EncodeRLP implements rlputil.Encoder.
 func (l *LogForStorage) EncodeRLP(w io.Writer) error {
 	return rlputil.Encode(w, rlpStorageLog{
-		Address:     l.Address,
-		Topics:      l.Topics,
-		Data:        l.Data,
-		BlockNumber: l.BlockNumber,
-		TxHash:      l.TxHash,
-		TxIndex:     l.TxIndex,
-		BlockHash:   l.BlockHash,
-		Index:       l.Index,
+		Address: l.Address,
+		Topics:  l.Topics,
+		Data:    l.Data,
 	})
 }
 
 // DecodeRLP implements rlputil.Decoder.
+//
+// Note some redundant fields(e.g. block number, tx hash etc) will be assembled later.
 func (l *LogForStorage) DecodeRLP(s *rlputil.Stream) error {
+	blob, err := s.Raw()
+	if err != nil {
+		return err
+	}
 	var dec rlpStorageLog
-	err := s.Decode(&dec)
+	err = rlputil.DecodeBytes(blob, &dec)
 	if err == nil {
 		*l = LogForStorage{
-			Address:     dec.Address,
-			Topics:      dec.Topics,
-			Data:        dec.Data,
-			BlockNumber: dec.BlockNumber,
-			TxHash:      dec.TxHash,
-			TxIndex:     dec.TxIndex,
-			BlockHash:   dec.BlockHash,
-			Index:       dec.Index,
+			Address: dec.Address,
+			Topics:  dec.Topics,
+			Data:    dec.Data,
+		}
+	} else {
+		// Try to decode log with previous definition.
+		var dec legacyRlpStorageLog
+		err = rlputil.DecodeBytes(blob, &dec)
+		if err == nil {
+			*l = LogForStorage{
+				Address: dec.Address,
+				Topics:  dec.Topics,
+				Data:    dec.Data,
+			}
 		}
 	}
 	return err

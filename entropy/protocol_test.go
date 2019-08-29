@@ -2,8 +2,10 @@ package entropy
 
 import (
 	"fmt"
+	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
+	"github.com/entropyio/go-entropy/common/rlputil"
 	"github.com/entropyio/go-entropy/entropy/downloader"
 	"github.com/entropyio/go-entropy/server/p2p"
 	"sync"
@@ -24,9 +26,9 @@ func TestStatusMsgErrors63(t *testing.T) { testStatusMsgErrors(t, 63) }
 func testStatusMsgErrors(t *testing.T, protocol int) {
 	pm, _ := newTestProtocolManagerMust(t, downloader.FullSync, 0, nil, nil)
 	var (
-		genesis = pm.blockchain.Genesis()
-		head    = pm.blockchain.CurrentHeader()
-		td      = pm.blockchain.GetTd(head.Hash(), head.Number.Uint64())
+		genesis = pm.blockChain.Genesis()
+		head    = pm.blockChain.CurrentHeader()
+		td      = pm.blockChain.GetTd(head.Hash(), head.Number.Uint64())
 	)
 	defer pm.Stop()
 
@@ -45,7 +47,7 @@ func testStatusMsgErrors(t *testing.T, protocol int) {
 		},
 		{
 			code: StatusMsg, data: statusData{uint32(protocol), 999, td, head.Hash(), genesis.Hash()},
-			wantError: errResp(ErrNetworkIdMismatch, "999 (!= 1)"),
+			wantError: errResp(ErrNetworkIdMismatch, "999 (!= %d)", DefaultConfig.NetworkId),
 		},
 		{
 			code: StatusMsg, data: statusData{uint32(protocol), DefaultConfig.NetworkId, td, head.Hash(), common.Hash{3}},
@@ -78,7 +80,7 @@ func TestRecvTransactions62(t *testing.T) { testRecvTransactions(t, 62) }
 func TestRecvTransactions63(t *testing.T) { testRecvTransactions(t, 63) }
 
 func testRecvTransactions(t *testing.T, protocol int) {
-	txAdded := make(chan []*types.Transaction)
+	txAdded := make(chan []*model.Transaction)
 	pm, _ := newTestProtocolManagerMust(t, downloader.FullSync, 0, nil, txAdded)
 	pm.acceptTxs = 1 // mark synced to accept transactions
 	p, _ := newTestPeer("peer", protocol, pm, true)
@@ -111,7 +113,7 @@ func testSendTransactions(t *testing.T, protocol int) {
 
 	// Fill the pool with big transactions.
 	const txsize = txsyncPackSize / 10
-	alltxs := make([]*types.Transaction, 100)
+	alltxs := make([]*model.Transaction, 100)
 	for nonce := range alltxs {
 		alltxs[nonce] = newTestTransaction(testAccount, uint64(nonce), txsize)
 	}
@@ -127,7 +129,7 @@ func testSendTransactions(t *testing.T, protocol int) {
 			seen[tx.Hash()] = false
 		}
 		for n := 0; n < len(alltxs) && !t.Failed(); {
-			var txs []*types.Transaction
+			var txs []*model.Transaction
 			msg, err := p.app.ReadMsg()
 			if err != nil {
 				t.Errorf("%v: read error: %v", p.Peer, err)
@@ -184,7 +186,7 @@ func TestGetBlockHeadersDataEncodeDecode(t *testing.T) {
 	}
 	// Iterate over each of the tests and try to encode and then decode
 	for i, tt := range tests {
-		bytes, err := rlp.EncodeToBytes(tt.packet)
+		bytes, err := rlputil.EncodeToBytes(tt.packet)
 		if err != nil && !tt.fail {
 			t.Fatalf("test %d: failed to encode packet: %v", i, err)
 		} else if err == nil && tt.fail {
@@ -192,7 +194,7 @@ func TestGetBlockHeadersDataEncodeDecode(t *testing.T) {
 		}
 		if !tt.fail {
 			packet := new(getBlockHeadersData)
-			if err := rlp.DecodeBytes(bytes, packet); err != nil {
+			if err := rlputil.DecodeBytes(bytes, packet); err != nil {
 				t.Fatalf("test %d: failed to decode packet: %v", i, err)
 			}
 			if packet.Origin.Hash != tt.packet.Origin.Hash || packet.Origin.Number != tt.packet.Origin.Number || packet.Amount != tt.packet.Amount ||

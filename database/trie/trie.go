@@ -1,3 +1,4 @@
+// Package trie implements Merkle Patricia Tries.
 package trie
 
 import (
@@ -7,7 +8,6 @@ import (
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/logger"
-	"github.com/entropyio/go-entropy/metrics"
 )
 
 var log = logger.NewLogger("[trie]")
@@ -20,25 +20,6 @@ var (
 	emptyState = crypto.Keccak256Hash(nil)
 )
 
-var (
-	cacheMissCounter   = metrics.NewRegisteredCounter("trie/cachemiss", nil)
-	cacheUnloadCounter = metrics.NewRegisteredCounter("trie/cacheunload", nil)
-)
-
-// CacheMisses retrieves a global counter measuring the number of cache misses
-// the trie had since process startup. This isn't useful for anything apart from
-// trie debugging purposes.
-func CacheMisses() int64 {
-	return cacheMissCounter.Count()
-}
-
-// CacheUnloads retrieves a global counter measuring the number of cache unloads
-// the trie did since process startup. This isn't useful for anything apart from
-// trie debugging purposes.
-func CacheUnloads() int64 {
-	return cacheUnloadCounter.Count()
-}
-
 // LeafCallback is a callback type invoked when a trie operation reaches a leaf
 // node. It's used by state sync and commit to allow handling external references
 // between account and storage tries.
@@ -50,26 +31,13 @@ type LeafCallback func(leaf []byte, parent common.Hash) error
 //
 // Trie is not safe for concurrent use.
 type Trie struct {
-	db           *TrieDatabase
-	root         node
-	originalRoot common.Hash
-
-	// Cache generation values.
-	// cachegen increases by one with each commit operation.
-	// new nodes are tagged with the current generation and unloaded
-	// when their generation is older than than cachegen-cachelimit.
-	cachegen, cachelimit uint16
-}
-
-// SetCacheLimit sets the number of 'cache generations' to keep.
-// A cache generation is created by a call to Commit.
-func (t *Trie) SetCacheLimit(l uint16) {
-	t.cachelimit = l
+	db   *TrieDatabase
+	root node
 }
 
 // newFlag returns the cache flag value for a newly created node.
 func (t *Trie) newFlag() nodeFlag {
-	return nodeFlag{dirty: true, gen: t.cachegen}
+	return nodeFlag{dirty: true}
 }
 
 // New creates a trie with an existing root node from db.
@@ -83,8 +51,7 @@ func New(root common.Hash, db *TrieDatabase) (*Trie, error) {
 		panic("trie.New called without a database")
 	}
 	trie := &Trie{
-		db:           db,
-		originalRoot: root,
+		db: db,
 	}
 	if root != (common.Hash{}) && root != emptyRoot {
 		rootnode, err := trie.resolveHash(root[:], nil)
@@ -93,17 +60,6 @@ func New(root common.Hash, db *TrieDatabase) (*Trie, error) {
 		}
 		trie.root = rootnode
 	}
-	//log.Debugf("New trie. root=%X", trie.root)
-	return trie, nil
-}
-
-// TODO: fix dpos trie prefix
-func NewTrieWithPrefix(root common.Hash, prefix []byte, db *TrieDatabase) (*Trie, error) {
-	trie, err := New(root, db)
-	if err != nil {
-		return nil, err
-	}
-	//trie.prefix = prefix
 	return trie, nil
 }
 
@@ -132,7 +88,6 @@ func (t *Trie) TryGet(key []byte) ([]byte, error) {
 	if err == nil && didResolve {
 		t.root = newroot
 	}
-	//log.Debugf("trie TryGet. key=%X, value=%X", key, value)
 	return value, err
 }
 
@@ -151,14 +106,12 @@ func (t *Trie) tryGet(origNode node, key []byte, pos int) (value []byte, newnode
 		if err == nil && didResolve {
 			n = n.copy()
 			n.Val = newnode
-			n.flags.gen = t.cachegen
 		}
 		return value, n, didResolve, err
 	case *fullNode:
 		value, newnode, didResolve, err = t.tryGet(n.Children[key[pos]], key, pos+1)
 		if err == nil && didResolve {
 			n = n.copy()
-			n.flags.gen = t.cachegen
 			n.Children[key[pos]] = newnode
 		}
 		return value, n, didResolve, err
@@ -196,7 +149,6 @@ func (t *Trie) Update(key, value []byte) {
 // If a node was not found in the database, a MissingNodeError is returned.
 func (t *Trie) TryUpdate(key, value []byte) error {
 	k := keybytesToHex(key)
-	//log.Debugf("trie TryUpdate. key=%X, k=%X, value=%X", key, k, value)
 	if len(value) != 0 {
 		_, n, err := t.insert(t.root, nil, k, valueNode(value))
 		if err != nil {
@@ -214,7 +166,6 @@ func (t *Trie) TryUpdate(key, value []byte) error {
 }
 
 func (t *Trie) insert(n node, prefix, key []byte, value node) (bool, node, error) {
-	//log.Debugf("trie insert. key=%X, value=%X, node=", key, value, reflect.TypeOf(n))
 	if len(key) == 0 {
 		if v, ok := n.(valueNode); ok {
 			return !bytes.Equal(v, value.(valueNode)), value, nil
@@ -294,7 +245,6 @@ func (t *Trie) Delete(key []byte) {
 // If a node was not found in the database, a MissingNodeError is returned.
 func (t *Trie) TryDelete(key []byte) error {
 	k := keybytesToHex(key)
-	log.Debugf("trie TryDelete. key=%X", key)
 	_, n, err := t.delete(t.root, nil, k)
 	if err != nil {
 		return err
@@ -430,10 +380,8 @@ func (t *Trie) resolve(n node, prefix []byte) (node, error) {
 }
 
 func (t *Trie) resolveHash(n hashNode, prefix []byte) (node, error) {
-	cacheMissCounter.Inc(1)
-
 	hash := common.BytesToHash(n)
-	if node := t.db.node(hash, t.cachegen); node != nil {
+	if node := t.db.node(hash); node != nil {
 		return node, nil
 	}
 	return nil, &MissingNodeError{NodeHash: hash, Path: prefix}
@@ -458,7 +406,6 @@ func (t *Trie) Commit(onleaf LeafCallback) (root common.Hash, err error) {
 		return common.Hash{}, err
 	}
 	t.root = cached
-	t.cachegen++
 	return common.BytesToHash(hash.(hashNode)), nil
 }
 
@@ -466,7 +413,7 @@ func (t *Trie) hashRoot(db *TrieDatabase, onleaf LeafCallback) (node, node, erro
 	if t.root == nil {
 		return hashNode(emptyRoot.Bytes()), nil, nil
 	}
-	h := newHasher(t.cachegen, t.cachelimit, onleaf)
+	h := newHasher(onleaf)
 	defer returnHasherToPool(h)
 	return h.hash(t.root, db, true)
 }

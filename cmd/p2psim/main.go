@@ -29,14 +29,13 @@ import (
 	"strings"
 	"text/tabwriter"
 
-
-	"gopkg.in/urfave/cli.v1"
+	"github.com/entropyio/go-entropy/common/crypto"
+	"github.com/entropyio/go-entropy/rpc"
+	"github.com/entropyio/go-entropy/server/p2p"
+	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"github.com/entropyio/go-entropy/server/p2p/simulations"
 	"github.com/entropyio/go-entropy/server/p2p/simulations/adapters"
-	"github.com/entropyio/go-entropy/common/crypto"
-	"github.com/entropyio/go-entropy/server/p2p/discover"
-	"github.com/entropyio/go-entropy/server/p2p"
-	"github.com/entropyio/go-entropy/rpc"
+	"gopkg.in/urfave/cli.v1"
 )
 
 var client *simulations.Client
@@ -270,7 +269,7 @@ func createNode(ctx *cli.Context) error {
 		if err != nil {
 			return err
 		}
-		config.ID = discover.PubkeyID(&privKey.PublicKey)
+		config.ID = enode.PubkeyToIDV4(&privKey.PublicKey)
 		config.PrivateKey = privKey
 	}
 	if services := ctx.String("services"); services != "" {

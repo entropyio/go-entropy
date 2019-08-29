@@ -3,11 +3,13 @@ package account
 import (
 	"math/big"
 
+	"fmt"
 	"github.com/entropyio/go-entropy"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/event"
 	"github.com/entropyio/go-entropy/logger"
+	"golang.org/x/crypto/sha3"
 )
 
 var log = logger.NewLogger("[account]")
@@ -19,8 +21,15 @@ type Account struct {
 	URL     URL            `json:"url"`     // Optional resource locator within a backend
 }
 
+const (
+	MimetypeDataWithValidator = "data/validator"
+	MimetypeTypedData         = "data/typed"
+	MimetypeClique            = "application/x-clique-header"
+	MimetypeTextPlain         = "text/plain"
+)
+
 // Wallet represents a software or hardware wallet that might contain one or more
-// account (derived from the same seed).
+// accounts (derived from the same seed).
 type Wallet interface {
 	// URL retrieves the canonical path under which this wallet is reachable. It is
 	// user by upper layers to define a sorting order over all wallets from multiple
@@ -48,13 +57,13 @@ type Wallet interface {
 	// Close releases any resources held by an open wallet instance.
 	Close() error
 
-	// Accounts retrieves the list of signing account the wallet is currently aware
+	// Accounts retrieves the list of signing accounts the wallet is currently aware
 	// of. For hierarchical deterministic wallets, the list will not be exhaustive,
-	// rather only contain the account explicitly pinned during account derivation.
+	// rather only contain the accounts explicitly pinned during account derivation.
 	Accounts() []Account
 
 	// Contains returns whether an account is part of this particular wallet or not.
-	Contains(account Account) bool
+	Contains(accountObj Account) bool
 
 	// Derive attempts to explicitly derive a hierarchical deterministic account at
 	// the specified derivation path. If requested, the derived account will be added
@@ -62,19 +71,41 @@ type Wallet interface {
 	Derive(path DerivationPath, pin bool) (Account, error)
 
 	// SelfDerive sets a base account derivation path from which the wallet attempts
-	// to discover non zero account and automatically add them to list of tracked
-	// account.
+	// to discover non zero accounts and automatically add them to list of tracked
+	// accounts.
 	//
 	// Note, self derivaton will increment the last component of the specified path
-	// opposed to decending into a child path to allow discovering account starting
+	// opposed to decending into a child path to allow discovering accounts starting
 	// from non zero components.
+	//
+	// Some hardware wallets switched derivation paths through their evolution, so
+	// this method supports providing multiple bases to discover old user accounts
+	// too. Only the last base will be used to derive the next empty account.
 	//
 	// You can disable automatic account discovery by calling SelfDerive with a nil
 	// chain state reader.
-	SelfDerive(base DerivationPath, chain entropy.ChainStateReader)
+	SelfDerive(bases []DerivationPath, chain entropy.ChainStateReader)
 
-	// SignHash requests the wallet to sign the given hash.
+	// SignData requests the wallet to sign the hash of the given data
+	// It looks up the account specified either solely via its address contained within,
+	// or optionally with the aid of any location metadata from the embedded URL field.
 	//
+	// If the wallet requires additional authentication to sign the request (e.g.
+	// a password to decrypt the account, or a PIN code o verify the transaction),
+	// an AuthNeededError instance will be returned, containing infos for the user
+	// about which fields or actions are needed. The user may retry by providing
+	// the needed details via SignDataWithPassphrase, or by other means (e.g. unlock
+	// the account in a keystore).
+	SignData(accountObj Account, mimeType string, data []byte) ([]byte, error)
+
+	// SignDataWithPassphrase is identical to SignData, but also takes a password
+	// NOTE: there's an chance that an erroneous call might mistake the two strings, and
+	// supply password in the mimetype field, or vice versa. Thus, an implementation
+	// should never echo the mimetype or return the mimetype in the error-response
+	SignDataWithPassphrase(accountObj Account, passphrase, mimeType string, data []byte) ([]byte, error)
+
+	// SignText requests the wallet to sign the hash of a given piece of data, prefixed
+	// by the Ethereum prefix scheme
 	// It looks up the account specified either solely via its address contained within,
 	// or optionally with the aid of any location metadata from the embedded URL field.
 	//
@@ -84,7 +115,10 @@ type Wallet interface {
 	// about which fields or actions are needed. The user may retry by providing
 	// the needed details via SignHashWithPassphrase, or by other means (e.g. unlock
 	// the account in a keystore).
-	SignHash(account Account, hash []byte) ([]byte, error)
+	SignText(accountObj Account, text []byte) ([]byte, error)
+
+	// SignTextWithPassphrase is identical to Signtext, but also takes a password
+	SignTextWithPassphrase(accountObj Account, passphrase string, hash []byte) ([]byte, error)
 
 	// SignTx requests the wallet to sign the given transaction.
 	//
@@ -92,29 +126,18 @@ type Wallet interface {
 	// or optionally with the aid of any location metadata from the embedded URL field.
 	//
 	// If the wallet requires additional authentication to sign the request (e.g.
-	// a password to decrypt the account, or a PIN code o verify the transaction),
+	// a password to decrypt the account, or a PIN code to verify the transaction),
 	// an AuthNeededError instance will be returned, containing infos for the user
 	// about which fields or actions are needed. The user may retry by providing
 	// the needed details via SignTxWithPassphrase, or by other means (e.g. unlock
 	// the account in a keystore).
-	SignTx(account Account, tx *model.Transaction, chainID *big.Int) (*model.Transaction, error)
+	SignTx(accountObj Account, tx *model.Transaction, chainID *big.Int) (*model.Transaction, error)
 
-	// SignHashWithPassphrase requests the wallet to sign the given hash with the
-	// given passphrase as extra authentication information.
-	//
-	// It looks up the account specified either solely via its address contained within,
-	// or optionally with the aid of any location metadata from the embedded URL field.
-	SignHashWithPassphrase(account Account, passphrase string, hash []byte) ([]byte, error)
-
-	// SignTxWithPassphrase requests the wallet to sign the given transaction, with the
-	// given passphrase as extra authentication information.
-	//
-	// It looks up the account specified either solely via its address contained within,
-	// or optionally with the aid of any location metadata from the embedded URL field.
-	SignTxWithPassphrase(account Account, passphrase string, tx *model.Transaction, chainID *big.Int) (*model.Transaction, error)
+	// SignTxWithPassphrase is identical to SignTx, but also takes a password
+	SignTxWithPassphrase(accountObj Account, passphrase string, tx *model.Transaction, chainID *big.Int) (*model.Transaction, error)
 }
 
-// Backend is a "wallet provider" that may contain a batch of account they can
+// Backend is a "wallet provider" that may contain a batch of accounts they can
 // sign transactions with and upon request, do so.
 type Backend interface {
 	// Wallets retrieves the list of wallets the backend is currently aware of.
@@ -132,6 +155,32 @@ type Backend interface {
 	// Subscribe creates an async subscription to receive notifications when the
 	// backend detects the arrival or departure of a wallet.
 	Subscribe(sink chan<- WalletEvent) event.Subscription
+}
+
+// TextHash is a helper function that calculates a hash for the given message that can be
+// safely used to calculate a signature from.
+//
+// The hash is calulcated as
+//   keccak256("\x19Entropy Signed Message:\n"${message length}${message}).
+//
+// This gives context to the signed message and prevents signing of transactions.
+func TextHash(data []byte) []byte {
+	hash, _ := TextAndHash(data)
+	return hash
+}
+
+// TextAndHash is a helper function that calculates a hash for the given message that can be
+// safely used to calculate a signature from.
+//
+// The hash is calulcated as
+//   keccak256("\x19Entropy Signed Message:\n"${message length}${message}).
+//
+// This gives context to the signed message and prevents signing of transactions.
+func TextAndHash(data []byte) ([]byte, string) {
+	msg := fmt.Sprintf("\x19Entropy Signed Message:\n%d%s", len(data), string(data))
+	hasher := sha3.NewLegacyKeccak256()
+	hasher.Write([]byte(msg))
+	return hasher.Sum(nil), msg
 }
 
 // WalletEventType represents the different event types that can be fired by

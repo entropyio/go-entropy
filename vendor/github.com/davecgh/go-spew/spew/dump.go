@@ -178,8 +178,8 @@ func (d *dumpState) dumpSlice(v reflect.Value) {
 		case cUint8tCharRE.MatchString(vts):
 			doConvert = true
 
-			// Try to use existing uint8 slices and fall back to converting
-			// and copying if that fails.
+		// Try to use existing uint8 slices and fall back to converting
+		// and copying if that fails.
 		case vt.Kind() == reflect.Uint8:
 			// We need an addressable interface to convert the type
 			// to a byte slice.  However, the reflect package won't
@@ -436,9 +436,9 @@ func (d *dumpState) dump(v reflect.Value) {
 	case reflect.UnsafePointer, reflect.Chan, reflect.Func:
 		printHexPtr(d.w, v.Pointer())
 
-		// There were not any other types at the time this code was written, but
-		// fall back to letting the default fmt package handle it in case any new
-		// types are added.
+	// There were not any other types at the time this code was written, but
+	// fall back to letting the default fmt package handle it in case any new
+	// types are added.
 	default:
 		if v.CanInterface() {
 			fmt.Fprintf(d.w, "%v", v.Interface())

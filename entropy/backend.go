@@ -19,7 +19,6 @@ import (
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus"
 
-	"github.com/entropyio/go-entropy/consensus/claude"
 	"github.com/entropyio/go-entropy/consensus/clique"
 	"github.com/entropyio/go-entropy/consensus/ethash"
 	"github.com/entropyio/go-entropy/database"
@@ -34,6 +33,7 @@ import (
 	"github.com/entropyio/go-entropy/rpc"
 	"github.com/entropyio/go-entropy/server/node"
 	"github.com/entropyio/go-entropy/server/p2p"
+	"github.com/entropyio/go-entropy/server/p2p/enr"
 	"sync/atomic"
 )
 
@@ -42,17 +42,20 @@ var log = logger.NewLogger("[entropy]")
 type LesServer interface {
 	Start(srvr *p2p.Server)
 	Stop()
+	APIs() []rpc.API
 	Protocols() []p2p.Protocol
 	SetBloomBitsIndexer(bbIndexer *blockchain.ChainIndexer)
+	//SetContractBackend(bind.ContractBackend)
 }
 
 // Entropy implements the Entropy full node service.
 type Entropy struct {
-	config      *Config
-	chainConfig *config.ChainConfig
+	config *Config
 
 	// Channel for shutting down the service
-	shutdownChan chan bool // Channel for shutting down the Entropy
+	shutdownChan chan bool
+
+	server *p2p.Server
 
 	// Handlers
 	txPool          *blockchain.TxPool
@@ -70,7 +73,7 @@ type Entropy struct {
 	bloomRequests chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer  *blockchain.ChainIndexer       // Bloom indexer operating during block imports
 
-	APIBackend *EthAPIBackend
+	APIBackend *EntropyAPIBackend
 
 	miner       *miner.Miner
 	gasPrice    *big.Int
@@ -87,16 +90,36 @@ func (s *Entropy) AddLesServer(ls LesServer) {
 	ls.SetBloomBitsIndexer(s.bloomIndexer)
 }
 
+// SetClient sets a rpc client which connecting to our local node.
+//func (s *Entropy) SetContractBackend(backend bind.ContractBackend) {
+//	// Pass the rpc client to les server if it is enabled.
+//	if s.lesServer != nil {
+//		s.lesServer.SetContractBackend(backend)
+//	}
+//}
+
 // New creates a new Entropy object (including the
 // initialisation of the common Entropy object)
 func New(ctx *node.ServiceContext, configObj *Config) (*Entropy, error) {
+	// Ensure configuration values are compatible and sane
 	if configObj.SyncMode == downloader.LightSync {
 		return nil, errors.New("can't run entropy.Entropy in light sync mode, use les.LightEntropy")
 	}
 	if !configObj.SyncMode.IsValid() {
 		return nil, fmt.Errorf("invalid sync mode %d", configObj.SyncMode)
 	}
-	chainDb, err := CreateDB(ctx, configObj, "chaindata")
+	if configObj.Miner.GasPrice == nil || configObj.Miner.GasPrice.Cmp(common.Big0) <= 0 {
+		log.Warning("Sanitizing invalid miner gas price", "provided", configObj.Miner.GasPrice, "updated", DefaultConfig.Miner.GasPrice)
+		configObj.Miner.GasPrice = new(big.Int).Set(DefaultConfig.Miner.GasPrice)
+	}
+	if configObj.NoPruning && configObj.TrieDirtyCache > 0 {
+		configObj.TrieCleanCache += configObj.TrieDirtyCache
+		configObj.TrieDirtyCache = 0
+	}
+	log.Info("Allocated trie memory caches", "clean", common.StorageSize(configObj.TrieCleanCache)*1024*1024, "dirty", common.StorageSize(configObj.TrieDirtyCache)*1024*1024)
+
+	// Assemble the Ethereum object
+	chainDb, err := ctx.OpenDatabaseWithFreezer("chaindata", configObj.DatabaseCache, configObj.DatabaseHandles, configObj.DatabaseFreezer, "entropy/db/chaindata/")
 	if err != nil {
 		return nil, err
 	}
@@ -109,32 +132,47 @@ func New(ctx *node.ServiceContext, configObj *Config) (*Entropy, error) {
 	entropy := &Entropy{
 		config:         configObj,
 		chainDb:        chainDb,
-		chainConfig:    chainConfig,
 		eventMux:       ctx.EventMux,
 		accountManager: ctx.AccountManager,
-		engine:         CreateConsensusEngine(ctx, chainConfig, &configObj.Ethash, configObj.MinerNotify, chainDb),
+		engine:         CreateConsensusEngine(ctx, chainConfig, &configObj.Ethash, configObj.Miner.Notify, configObj.Miner.Noverify, chainDb),
 		shutdownChan:   make(chan bool),
 		networkID:      configObj.NetworkId,
-		gasPrice:       configObj.GasPrice,
-		entropyBase:    configObj.EntropyBase,
+		gasPrice:       configObj.Miner.GasPrice,
+		entropyBase:    configObj.Miner.EntropyBase,
 		bloomRequests:  make(chan chan *bloombits.Retrieval),
-		bloomIndexer:   NewBloomIndexer(chainDb, config.BloomBitsBlocks),
+		bloomIndexer:   NewBloomIndexer(chainDb, config.BloomBitsBlocks, config.BloomConfirms),
 	}
 
-	log.Infof("Initialising Entropy protocol. versions=%s, network=%d", ProtocolVersions, configObj.NetworkId)
+	bcVersion := mapper.ReadDatabaseVersion(chainDb)
+	var dbVer = "<nil>"
+	if bcVersion != nil {
+		dbVer = fmt.Sprintf("%d", *bcVersion)
+	}
+	log.Infof("Initialising Entropy protocol. versions=%s, network=%d, dbVersion=%s", ProtocolVersions, configObj.NetworkId, dbVer)
 
 	if !configObj.SkipBcVersionCheck {
-		bcVersion := mapper.ReadDatabaseVersion(chainDb)
-		if bcVersion != blockchain.BlockChainVersion && bcVersion != 0 {
-			return nil, fmt.Errorf("Blockchain DB version mismatch (%d / %d). Run entropy upgradedb.\n", bcVersion, blockchain.BlockChainVersion)
+		if bcVersion != nil && *bcVersion > blockchain.BlockChainVersion {
+			return nil, fmt.Errorf("database version is v%d, Geth %s only supports v%d", *bcVersion, config.VersionWithMeta, blockchain.BlockChainVersion)
+		} else if bcVersion == nil || *bcVersion < blockchain.BlockChainVersion {
+			log.Warning("Upgrade blockchain database version", "from", dbVer, "to", blockchain.BlockChainVersion)
+			mapper.WriteDatabaseVersion(chainDb, blockchain.BlockChainVersion)
 		}
-		mapper.WriteDatabaseVersion(chainDb, blockchain.BlockChainVersion)
 	}
 	var (
-		vmConfig    = evm.Config{EnablePreimageRecording: configObj.EnablePreimageRecording}
-		cacheConfig = &blockchain.CacheConfig{Disabled: configObj.NoPruning, TrieNodeLimit: configObj.TrieCache, TrieTimeLimit: configObj.TrieTimeout}
+		vmConfig = evm.Config{
+			EnablePreimageRecording: configObj.EnablePreimageRecording,
+			EWASMInterpreter:        configObj.EWASMInterpreter,
+			EVMInterpreter:          configObj.EVMInterpreter,
+		}
+		cacheConfig = &blockchain.CacheConfig{
+			TrieCleanLimit:      configObj.TrieCleanCache,
+			TrieCleanNoPrefetch: configObj.NoPrefetch,
+			TrieDirtyLimit:      configObj.TrieDirtyCache,
+			TrieDirtyDisabled:   configObj.NoPruning,
+			TrieTimeLimit:       configObj.TrieTimeout,
+		}
 	)
-	entropy.blockchain, err = blockchain.NewBlockChain(chainDb, cacheConfig, entropy.chainConfig, entropy.engine, vmConfig)
+	entropy.blockchain, err = blockchain.NewBlockChain(chainDb, cacheConfig, chainConfig, entropy.engine, vmConfig, entropy.shouldPreserve)
 	if err != nil {
 		return nil, err
 	}
@@ -149,18 +187,25 @@ func New(ctx *node.ServiceContext, configObj *Config) (*Entropy, error) {
 	if configObj.TxPool.Journal != "" {
 		configObj.TxPool.Journal = ctx.ResolvePath(configObj.TxPool.Journal)
 	}
-	entropy.txPool = blockchain.NewTxPool(configObj.TxPool, entropy.chainConfig, entropy.blockchain)
+	entropy.txPool = blockchain.NewTxPool(configObj.TxPool, chainConfig, entropy.blockchain)
 
-	if entropy.protocolManager, err = NewProtocolManager(entropy.chainConfig, configObj.SyncMode, configObj.NetworkId, entropy.eventMux, entropy.txPool, entropy.engine, entropy.blockchain, chainDb); err != nil {
+	// Permit the downloader to use the trie cache allowance during fast sync
+	cacheLimit := cacheConfig.TrieCleanLimit + cacheConfig.TrieDirtyLimit
+	checkpoint := configObj.Checkpoint
+	if checkpoint == nil {
+		checkpoint = config.TrustedCheckpoints[genesisHash]
+	}
+	if entropy.protocolManager, err = NewProtocolManager(chainConfig, checkpoint, configObj.SyncMode, configObj.NetworkId, entropy.eventMux, entropy.txPool, entropy.engine, entropy.blockchain, chainDb, cacheLimit, configObj.Whitelist); err != nil {
 		return nil, err
 	}
-	entropy.miner = miner.New(entropy, entropy.chainConfig, entropy.EventMux(), entropy.engine)
-	entropy.miner.SetExtra(makeExtraData(configObj.ExtraData))
 
-	entropy.APIBackend = &EthAPIBackend{entropy, nil}
+	entropy.miner = miner.New(entropy, &configObj.Miner, chainConfig, entropy.EventMux(), entropy.engine, entropy.isLocalBlock)
+	entropy.miner.SetExtra(makeExtraData(configObj.Miner.ExtraData))
+
+	entropy.APIBackend = &EntropyAPIBackend{ctx.ExtRPCEnabled(), entropy, nil}
 	gpoParams := configObj.GPO
 	if gpoParams.Default == nil {
-		gpoParams.Default = configObj.GasPrice
+		gpoParams.Default = configObj.Miner.GasPrice
 	}
 	entropy.APIBackend.gpo = gasprice.NewOracle(entropy.APIBackend, gpoParams)
 
@@ -184,20 +229,8 @@ func makeExtraData(extra []byte) []byte {
 	return extra
 }
 
-// CreateDB creates the chain database.
-func CreateDB(ctx *node.ServiceContext, config *Config, name string) (database.Database, error) {
-	db, err := ctx.OpenDatabase(name, config.DatabaseCache, config.DatabaseHandles)
-	if err != nil {
-		return nil, err
-	}
-	if db, ok := db.(*database.LDBDatabase); ok {
-		db.Meter("entropy/db/chaindata/")
-	}
-	return db, nil
-}
-
-// CreateConsensusEngine creates the required type of consensus engine instance for an Entropy service
-func CreateConsensusEngine(ctx *node.ServiceContext, chainConfig *config.ChainConfig, ethashConfig *ethash.Config, notify []string, db database.Database) consensus.Engine {
+// CreateConsensusEngine creates the required type of consensus engine instance for an Ethereum service
+func CreateConsensusEngine(ctx *node.ServiceContext, chainConfig *config.ChainConfig, ethashConfig *ethash.Config, notify []string, noverify bool, db database.Database) consensus.Engine {
 	// If proof-of-authority is requested, set it up
 	if chainConfig.Clique != nil {
 		return clique.New(chainConfig.Clique, db)
@@ -209,7 +242,7 @@ func CreateConsensusEngine(ctx *node.ServiceContext, chainConfig *config.ChainCo
 		return ethash.NewFaker()
 	case ethash.ModeTest:
 		log.Warning("Ethash used in test mode")
-		return ethash.NewTester(nil)
+		return ethash.NewTester(nil, noverify)
 	case ethash.ModeShared:
 		log.Warning("Ethash used in shared mode")
 		return ethash.NewShared()
@@ -221,9 +254,9 @@ func CreateConsensusEngine(ctx *node.ServiceContext, chainConfig *config.ChainCo
 			DatasetDir:     ethashConfig.DatasetDir,
 			DatasetsInMem:  ethashConfig.DatasetsInMem,
 			DatasetsOnDisk: ethashConfig.DatasetsOnDisk,
-		}, notify)
+		}, notify, noverify)
 		//	engine.SetThreads(-1) // Disable CPU mining
-		engine.SetThreads(1) // TODO: 1 for test
+		engine.SetThreads(1) // FIXME: 1 for test
 		log.Warning("POW used in product mode. engine threads number: 1")
 		return engine
 	}
@@ -234,8 +267,17 @@ func CreateConsensusEngine(ctx *node.ServiceContext, chainConfig *config.ChainCo
 func (s *Entropy) APIs() []rpc.API {
 	apis := entropyapi.GetAPIs(s.APIBackend)
 
+	// Append any APIs exposed explicitly by the les server
+	if s.lesServer != nil {
+		apis = append(apis, s.lesServer.APIs()...)
+	}
 	// Append any APIs exposed explicitly by the consensus engine
 	apis = append(apis, s.engine.APIs(s.BlockChain())...)
+
+	// Append any APIs exposed explicitly by the les server
+	if s.lesServer != nil {
+		apis = append(apis, s.lesServer.APIs()...)
+	}
 
 	// Append all the local APIs and return
 	return append(apis, []rpc.API{
@@ -276,7 +318,7 @@ func (s *Entropy) APIs() []rpc.API {
 		}, {
 			Namespace: "debug",
 			Version:   "1.0",
-			Service:   NewPrivateDebugAPI(s.chainConfig, s),
+			Service:   NewPrivateDebugAPI(s),
 		}, {
 			Namespace: "net",
 			Version:   "1.0",
@@ -306,14 +348,68 @@ func (s *Entropy) EntropyBase() (eb common.Address, err error) {
 			s.entropyBase = entropyBase
 			s.lock.Unlock()
 
-			//log.Infof("EntropyBase automatically configured address: %x", entropybase)
+			log.Infof("EntropyBase automatically configured address: %X", entropyBase)
 			return entropyBase, nil
 		}
 	}
 	return common.Address{}, fmt.Errorf("entropybase must be explicitly specified")
 }
 
-// SetEntropyBase sets the mining reward address.
+// isLocalBlock checks whether the specified block is mined
+// by local miner accounts.
+//
+// We regard two types of accounts as local miner account: etherbase
+// and accounts specified via `txpool.locals` flag.
+func (s *Entropy) isLocalBlock(block *model.Block) bool {
+	author, err := s.engine.Author(block.Header())
+	if err != nil {
+		log.Warning("Failed to retrieve block author", "number", block.NumberU64(), "hash", block.Hash(), "err", err)
+		return false
+	}
+	// Check whether the given address is etherbase.
+	s.lock.RLock()
+	entropyBase := s.entropyBase
+	s.lock.RUnlock()
+	if author == entropyBase {
+		return true
+	}
+	// Check whether the given address is specified by `txpool.local`
+	// CLI flag.
+	for _, accountObj := range s.config.TxPool.Locals {
+		if accountObj == author {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldPreserve checks whether we should preserve the given block
+// during the chain reorg depending on whether the author of block
+// is a local account.
+func (s *Entropy) shouldPreserve(block *model.Block) bool {
+	// The reason we need to disable the self-reorg preserving for clique
+	// is it can be probable to introduce a deadlock.
+	//
+	// e.g. If there are 7 available signers
+	//
+	// r1   A
+	// r2     B
+	// r3       C
+	// r4         D
+	// r5   A      [X] F G
+	// r6    [X]
+	//
+	// In the round5, the inturn signer E is offline, so the worst case
+	// is A, F and G sign the block of round5 and reject the block of opponents
+	// and in the round6, the last available signer B is offline, the whole
+	// network is stuck.
+	if _, ok := s.engine.(*clique.Clique); ok {
+		return false
+	}
+	return s.isLocalBlock(block)
+}
+
+// SetEtherbase sets the mining reward address.
 func (s *Entropy) SetEntropyBase(entropyBase common.Address) {
 	s.lock.Lock()
 	s.entropyBase = entropyBase
@@ -322,42 +418,68 @@ func (s *Entropy) SetEntropyBase(entropyBase common.Address) {
 	s.miner.SetEntropyBase(entropyBase)
 }
 
-func (s *Entropy) StartMining(local bool) error {
-	eb, err := s.EntropyBase()
-	log.Info("StartMining with eb: ", eb)
-	if err != nil {
-		log.Error("Cannot start mining without entropyBase", "err", err)
-		return fmt.Errorf("entropyBase missing: %v", err)
+// StartMining starts the miner with the given number of CPU threads. If mining
+// is already running, this method adjust the number of threads allowed to use
+// and updates the minimum price required by the transaction pool.
+func (s *Entropy) StartMining(threads int) error {
+	// Update the thread count within the consensus engine
+	type threaded interface {
+		SetThreads(threads int)
 	}
-	if cliqueEngine, ok := s.engine.(*clique.Clique); ok {
-		wallet, err := s.accountManager.Find(account.Account{Address: eb})
-		if wallet == nil || err != nil {
-			log.Error("EntropyBase account unavailable locally", "err", err)
-			return fmt.Errorf("signer missing: %v", err)
+
+	threads = 1 // FIXME: 1 thread for test
+	if th, ok := s.engine.(threaded); ok {
+		log.Infof("Updated mining threads. threads=%d", threads)
+		if threads == 0 {
+			threads = -1 // Disable the miner from within
 		}
-		cliqueEngine.Authorize(eb, wallet.SignHash)
+		th.SetThreads(threads)
 	}
-	// add Claude dpos support
-	if claudeEngine, ok := s.engine.(*claude.Claude); ok {
-		wallet, err := s.accountManager.Find(account.Account{Address: eb})
-		if wallet == nil || err != nil {
-			log.Error("EntropyBase account unavailable locally", "err", err)
-			return fmt.Errorf("signer missing: %v", err)
+	// If the miner was not running, initialize it
+	if !s.IsMining() {
+		// Propagate the initial price point to the transaction pool
+		s.lock.RLock()
+		price := s.gasPrice
+		s.lock.RUnlock()
+		s.txPool.SetGasPrice(price)
+
+		// Configure the local mining address
+		eb, err := s.EntropyBase()
+		if err != nil {
+			log.Error("Cannot start mining without etherbase", "err", err)
+			return fmt.Errorf("etherbase missing: %v", err)
 		}
-		claudeEngine.Authorize(eb, wallet.SignHash)
-	}
-	if local {
-		// If local (CPU) mining is started, we can disable the transaction rejection
-		// mechanism introduced to speed sync times. CPU mining on mainnet is ludicrous
-		// so none will ever hit this path, whereas marking sync done on CPU mining
-		// will ensure that private networks work in single miner mode too.
+		if clique, ok := s.engine.(*clique.Clique); ok {
+			wallet, err := s.accountManager.Find(account.Account{Address: eb})
+			if wallet == nil || err != nil {
+				log.Error("Etherbase account unavailable locally", "err", err)
+				return fmt.Errorf("signer missing: %v", err)
+			}
+			clique.Authorize(eb, wallet.SignData)
+		}
+		// If mining is started, we can disable the transaction rejection mechanism
+		// introduced to speed sync times.
 		atomic.StoreUint32(&s.protocolManager.acceptTxs, 1)
+
+		go s.miner.Start(eb)
 	}
-	go s.miner.Start(eb)
 	return nil
 }
 
-func (s *Entropy) StopMining()         { s.miner.Stop() }
+// StopMining terminates the miner, both at the consensus engine level as well as
+// at the block creation level.
+func (s *Entropy) StopMining() {
+	// Update the thread count within the consensus engine
+	type threaded interface {
+		SetThreads(threads int)
+	}
+	if th, ok := s.engine.(threaded); ok {
+		th.SetThreads(-1)
+	}
+	// Stop the block creating itself
+	s.miner.Stop()
+}
+
 func (s *Entropy) IsMining() bool      { return s.miner.Mining() }
 func (s *Entropy) Miner() *miner.Miner { return s.miner }
 
@@ -368,24 +490,32 @@ func (s *Entropy) EventMux() *event.TypeMux           { return s.eventMux }
 func (s *Entropy) Engine() consensus.Engine           { return s.engine }
 func (s *Entropy) ChainDb() database.Database         { return s.chainDb }
 func (s *Entropy) IsListening() bool                  { return true } // Always listening
-func (s *Entropy) EthVersion() int                    { return int(s.protocolManager.SubProtocols[0].Version) }
+func (s *Entropy) EthVersion() int                    { return int(ProtocolVersions[0]) }
 func (s *Entropy) NetVersion() uint64                 { return s.networkID }
 func (s *Entropy) Downloader() *downloader.Downloader { return s.protocolManager.downloader }
+func (s *Entropy) Synced() bool                       { return atomic.LoadUint32(&s.protocolManager.acceptTxs) == 1 }
+func (s *Entropy) ArchiveMode() bool                  { return s.config.NoPruning }
 
 // Protocols implements node.Service, returning all the currently configured
 // network protocols to start.
 func (s *Entropy) Protocols() []p2p.Protocol {
-	if s.lesServer == nil {
-		return s.protocolManager.SubProtocols
+	protos := make([]p2p.Protocol, len(ProtocolVersions))
+	for i, vsn := range ProtocolVersions {
+		protos[i] = s.protocolManager.makeProtocol(vsn)
+		protos[i].Attributes = []enr.Entry{s.currentEthEntry()}
 	}
-	return append(s.protocolManager.SubProtocols, s.lesServer.Protocols()...)
+	if s.lesServer != nil {
+		protos = append(protos, s.lesServer.Protocols()...)
+	}
+	return protos
 }
 
 // Start implements node.Service, starting all internal goroutines needed by the
 // Entropy protocol implementation.
 func (s *Entropy) Start(srvr *p2p.Server) error {
+	s.startEthEntryUpdate(srvr.LocalNode())
 	// Start the bloom bits servicing goroutines
-	s.startBloomHandlers()
+	s.startBloomHandlers(config.BloomBitsBlocks)
 
 	// Start the RPC service
 	s.netRPCService = entropyapi.NewPublicNetAPI(srvr, s.NetVersion())

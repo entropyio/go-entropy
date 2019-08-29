@@ -8,7 +8,8 @@ import (
 	"testing"
 )
 
-// Tests that batched bloom bits are correctly rotated from the input bloom filters.
+// Tests that batched bloom bits are correctly rotated from the input bloom
+// filters.
 func TestGenerator(t *testing.T) {
 	// Generate the input and the rotated output
 	var input, output [model.BloomBitLength][model.BloomByteLength]byte

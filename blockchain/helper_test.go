@@ -3,6 +3,7 @@ package blockchain
 import (
 	"container/list"
 
+	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/database"
 	"github.com/entropyio/go-entropy/event"
@@ -62,7 +63,7 @@ func (tm *TestManager) Db() database.Database {
 func NewTestManager() *TestManager {
 	testManager := &TestManager{}
 	testManager.eventMux = new(event.TypeMux)
-	testManager.db = database.NewMemDatabase()
+	testManager.db = mapper.NewMemoryDatabase()
 	// testManager.txPool = NewTxPool(testManager)
 	// testManager.blockChain = NewBlockChain(testManager)
 	// testManager.stateManager = NewStateManager(testManager)

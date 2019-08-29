@@ -7,6 +7,7 @@ import (
 
 	"github.com/entropyio/go-entropy/account"
 	"github.com/entropyio/go-entropy/blockchain"
+	"github.com/entropyio/go-entropy/blockchain/bloombits"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
@@ -28,28 +29,39 @@ type Backend interface {
 	ChainDb() database.Database
 	EventMux() *event.TypeMux
 	AccountManager() *account.Manager
+	ExtRPCEnabled() bool
+	RPCGasCap() *big.Int // global gas cap for eth_call over rpc: DoS protection
 
 	// BlockChain API
 	SetHead(number uint64)
 	HeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*model.Header, error)
+	HeaderByHash(ctx context.Context, blockHash common.Hash) (*model.Header, error)
 	BlockByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*model.Block, error)
 	StateAndHeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*state.StateDB, *model.Header, error)
 	GetBlock(ctx context.Context, blockHash common.Hash) (*model.Block, error)
 	GetReceipts(ctx context.Context, blockHash common.Hash) (model.Receipts, error)
 	GetTd(blockHash common.Hash) *big.Int
-	GetEVM(ctx context.Context, msg blockchain.Message, state *state.StateDB, header *model.Header, vmCfg evm.Config) (*evm.EVM, func() error, error)
+	GetEVM(ctx context.Context, msg blockchain.Message, state *state.StateDB, header *model.Header) (*evm.EVM, func() error, error)
 	SubscribeChainEvent(ch chan<- blockchain.ChainEvent) event.Subscription
 	SubscribeChainHeadEvent(ch chan<- blockchain.ChainHeadEvent) event.Subscription
 	SubscribeChainSideEvent(ch chan<- blockchain.ChainSideEvent) event.Subscription
 
-	// TxPool API
+	// Transaction pool API
 	SendTx(ctx context.Context, signedTx *model.Transaction) error
+	GetTransaction(ctx context.Context, txHash common.Hash) (*model.Transaction, common.Hash, uint64, uint64, error)
 	GetPoolTransactions() (model.Transactions, error)
 	GetPoolTransaction(txHash common.Hash) *model.Transaction
 	GetPoolNonce(ctx context.Context, addr common.Address) (uint64, error)
 	Stats() (pending int, queued int)
 	TxPoolContent() (map[common.Address]model.Transactions, map[common.Address]model.Transactions)
 	SubscribeNewTxsEvent(chan<- blockchain.NewTxsEvent) event.Subscription
+
+	// Filter API
+	BloomStatus() (uint64, uint64)
+	GetLogs(ctx context.Context, blockHash common.Hash) ([][]*model.Log, error)
+	ServiceFilter(ctx context.Context, session *bloombits.MatcherSession)
+	SubscribeLogsEvent(ch chan<- []*model.Log) event.Subscription
+	SubscribeRemovedLogsEvent(ch chan<- blockchain.RemovedLogsEvent) event.Subscription
 
 	ChainConfig() *config.ChainConfig
 	CurrentBlock() *model.Block

@@ -53,8 +53,8 @@ type blockChain interface {
 // Service implements an Entropy netstats reporting daemon that pushes local
 // chain statistics up to a monitoring server.
 type Service struct {
-	server *p2p.Server      // Peer-to-peer server to retrieve networking infos
-	entropy    *entropy.Entropy // Full Entropy service if monitoring a full node
+	server  *p2p.Server      // Peer-to-peer server to retrieve networking infos
+	entropy *entropy.Entropy // Full Entropy service if monitoring a full node
 	//les    *les.LightEntropy // Light Entropy service if monitoring a light node
 	engine consensus.Engine // Consensus engine to retrieve variadic block fields
 
@@ -67,7 +67,7 @@ type Service struct {
 }
 
 // New returns a monitoring service ready for stats reporting.
-func New(url string, ethServ *entropy.Entropy /*lesServ *les.LightEntropy*/) (*Service, error) {
+func New(url string, entropyServ *entropy.Entropy /*lesServ *les.LightEntropy*/) (*Service, error) {
 	// Parse the netstats connection url
 	re := regexp.MustCompile("([^:@]*)(:([^@]*))?@(.+)")
 	parts := re.FindStringSubmatch(url)
@@ -76,13 +76,13 @@ func New(url string, ethServ *entropy.Entropy /*lesServ *les.LightEntropy*/) (*S
 	}
 	// Assemble and return the stats service
 	var engine consensus.Engine
-	if ethServ != nil {
-		engine = ethServ.Engine()
+	if entropyServ != nil {
+		engine = entropyServ.Engine()
 	} else {
 		//engine = lesServ.Engine()
 	}
 	return &Service{
-		entropy: ethServ,
+		entropy: entropyServ,
 		//les:    lesServ,
 		engine: engine,
 		node:   parts[1],
@@ -157,7 +157,7 @@ func (s *Service) loop() {
 				default:
 				}
 
-				// Notify of new transaction events, but drop if too frequent
+			// Notify of new transaction events, but drop if too frequent
 			case <-txEventCh:
 				if time.Duration(timeutil.Now()-lastTx) < time.Second {
 					continue
@@ -169,7 +169,7 @@ func (s *Service) loop() {
 				default:
 				}
 
-				// node stopped
+			// node stopped
 			case <-txSub.Err():
 				break HandleLoop
 			case <-headSub.Err():
@@ -541,7 +541,7 @@ func (s *Service) assembleBlockStats(block *model.Block) *blockStats {
 		Number:     header.Number,
 		Hash:       header.Hash(),
 		ParentHash: header.ParentHash,
-		Timestamp:  header.Time,
+		Timestamp:  new(big.Int).SetUint64(header.Time),
 		Miner:      author,
 		GasUsed:    header.GasUsed,
 		GasLimit:   header.GasLimit,

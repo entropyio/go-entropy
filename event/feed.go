@@ -52,7 +52,7 @@ func (f *Feed) init() {
 // Subscribe adds a channel to the feed. Future sends will be delivered on the channel
 // until the subscription is canceled. All channels added must have the same element type.
 //
-// The channel should have ample buffer entropy to avoid blocking other subscribers.
+// The channel should have ample buffer space to avoid blocking other subscribers.
 // Slow subscribers are not dropped.
 func (f *Feed) Subscribe(channel interface{}) Subscription {
 	f.once.Do(f.init)
@@ -139,7 +139,7 @@ func (f *Feed) Send(value interface{}) (nsent int) {
 	for {
 		// Fast path: try sending without blocking before adding to the select set.
 		// This should usually succeed if subscribers are fast enough and have free
-		// buffer entropy.
+		// buffer space.
 		for i := firstSubSendCase; i < len(cases); i++ {
 			if cases[i].Chan.TrySend(rvalue) {
 				nsent++
@@ -214,3 +214,19 @@ func (cs caseList) deactivate(index int) caseList {
 	cs[index], cs[last] = cs[last], cs[index]
 	return cs[:last]
 }
+
+// func (cs caseList) String() string {
+//     s := "["
+//     for i, cas := range cs {
+//             if i != 0 {
+//                     s += ", "
+//             }
+//             switch cas.Dir {
+//             case reflect.SelectSend:
+//                     s += fmt.Sprintf("%v<-", cas.Chan.Interface())
+//             case reflect.SelectRecv:
+//                     s += fmt.Sprintf("<-%v", cas.Chan.Interface())
+//             }
+//     }
+//     return s + "]"
+// }

@@ -6,16 +6,22 @@ import (
 	"github.com/entropyio/go-entropy/blockchain/model"
 )
 
-// errSectionOutOfBounds is returned if the user tried to add more bloom filters
-// to the batch than available space, or if tries to retrieve above the capacity,
-var errSectionOutOfBounds = errors.New("section out of bounds")
+var (
+	// errSectionOutOfBounds is returned if the user tried to add more bloom filters
+	// to the batch than available space, or if tries to retrieve above the capacity.
+	errSectionOutOfBounds = errors.New("section out of bounds")
+
+	// errBloomBitOutOfBounds is returned if the user tried to retrieve specified
+	// bit bloom above the capacity.
+	errBloomBitOutOfBounds = errors.New("bloom bit out of bounds")
+)
 
 // Generator takes a number of bloom filters and generates the rotated bloom bits
 // to be used for batched filtering.
 type Generator struct {
 	blooms   [model.BloomBitLength][]byte // Rotated blooms for per-bit matching
 	sections uint                         // Number of sections to batch together
-	nextBit  uint                         // Next bit to set when adding a bloom
+	nextSec  uint                         // Next section to set when adding a bloom
 }
 
 // NewGenerator creates a rotated bloom generator that can iteratively fill a
@@ -35,15 +41,15 @@ func NewGenerator(sections uint) (*Generator, error) {
 // in memory accordingly.
 func (b *Generator) AddBloom(index uint, bloom model.Bloom) error {
 	// Make sure we're not adding more bloom filters than our capacity
-	if b.nextBit >= b.sections {
+	if b.nextSec >= b.sections {
 		return errSectionOutOfBounds
 	}
-	if b.nextBit != index {
+	if b.nextSec != index {
 		return errors.New("bloom filter with unexpected index")
 	}
 	// Rotate the bloom and insert into our collection
-	byteIndex := b.nextBit / 8
-	bitMask := byte(1) << byte(7-b.nextBit%8)
+	byteIndex := b.nextSec / 8
+	bitMask := byte(1) << byte(7-b.nextSec%8)
 
 	for i := 0; i < model.BloomBitLength; i++ {
 		bloomByteIndex := model.BloomByteLength - 1 - i/8
@@ -53,7 +59,7 @@ func (b *Generator) AddBloom(index uint, bloom model.Bloom) error {
 			b.blooms[i][byteIndex] |= bitMask
 		}
 	}
-	b.nextBit++
+	b.nextSec++
 
 	return nil
 }
@@ -61,11 +67,11 @@ func (b *Generator) AddBloom(index uint, bloom model.Bloom) error {
 // Bitset returns the bit vector belonging to the given bit index after all
 // blooms have been added.
 func (b *Generator) Bitset(idx uint) ([]byte, error) {
-	if b.nextBit != b.sections {
+	if b.nextSec != b.sections {
 		return nil, errors.New("bloom not fully generated yet")
 	}
-	if idx >= b.sections {
-		return nil, errSectionOutOfBounds
+	if idx >= model.BloomBitLength {
+		return nil, errBloomBitOutOfBounds
 	}
 	return b.blooms[idx], nil
 }

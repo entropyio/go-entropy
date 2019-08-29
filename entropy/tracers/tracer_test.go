@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/evm"
@@ -26,13 +27,19 @@ func (account) ReturnGas(*big.Int)                                  {}
 func (account) SetCode(common.Hash, []byte)                         {}
 func (account) ForEachStorage(cb func(key, value common.Hash) bool) {}
 
+type dummyStatedb struct {
+	state.StateDB
+}
+
+func (*dummyStatedb) GetRefund() uint64 { return 1337 }
+
 func runTrace(tracer *Tracer) (json.RawMessage, error) {
-	env := evm.NewEVM(evm.Context{BlockNumber: big.NewInt(1)}, nil, config.TestChainConfig, evm.Config{Debug: true, Tracer: tracer})
+	env := evm.NewEVM(evm.Context{BlockNumber: big.NewInt(1)}, &dummyStatedb{}, config.TestChainConfig, evm.Config{Debug: true, Tracer: tracer})
 
 	contract := evm.NewContract(account{}, account{}, big.NewInt(0), 10000)
 	contract.Code = []byte{byte(evm.PUSH1), 0x1, byte(evm.PUSH1), 0x1, 0x0}
 
-	_, err := env.Interpreter().Run(contract, []byte{})
+	_, err := env.Interpreter().Run(contract, []byte{}, false)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +116,7 @@ func TestHaltBetweenSteps(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	env := evm.NewEVM(evm.Context{BlockNumber: big.NewInt(1)}, nil, config.TestChainConfig, evm.Config{Debug: true, Tracer: tracer})
+	env := evm.NewEVM(evm.Context{BlockNumber: big.NewInt(1)}, &dummyStatedb{}, config.TestChainConfig, evm.Config{Debug: true, Tracer: tracer})
 	contract := evm.NewContract(&account{}, &account{}, big.NewInt(0), 0)
 
 	tracer.CaptureState(env, 0, 0, 0, 0, nil, nil, contract, 0, nil)

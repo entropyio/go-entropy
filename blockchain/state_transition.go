@@ -18,7 +18,7 @@ var (
 The State Transitioning Model
 
 A state transition is a change made when a transaction is applied to the current world state
-The state transitioning model does all all the necessary work to work out a valid new state root.
+The state transitioning model does all the necessary work to work out a valid new state root.
 
 1) Nonce handling
 2) Pre pay gas
@@ -150,7 +150,7 @@ func (st *StateTransition) buyGas() error {
 
 	st.initialGas = st.msg.Gas()
 	st.state.SubBalance(st.msg.From(), mgval)
-	transactionLog.Debugf("buyGas: price=%d, msgGas=%d, stGas=%d, subGas=%d, from=%X",
+	transactionLog.Debugf("buyGas: gasPrice=%d, gasLimit=%d, initialGas=%d, buyGas=%d, from=%X",
 		st.gasPrice, st.msg.Gas(), st.gas, mgval, st.msg.From())
 	return nil
 }
@@ -169,8 +169,8 @@ func (st *StateTransition) preCheck() error {
 }
 
 // TransitionDb will transition the state by applying the current message and
-// returning the result including the the used gas. It returns an error if it
-// failed. An error indicates a consensus issue.
+// returning the result including the used gas. It returns an error if failed.
+// An error indicates a consensus issue.
 func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bool, err error) {
 	transactionLog.Debugf("TransitionDb: price=%d, msgGas=%d, stGas=%d, from=%X",
 		st.gasPrice, st.msg.Gas(), st.gas, st.msg.From())
@@ -229,7 +229,7 @@ func (st *StateTransition) refundGas() {
 	}
 	st.gas += refund
 
-	// Return ENTROPY for remaining gas, exchanged at the original rate.
+	// Return ETH for remaining gas, exchanged at the original rate.
 	remaining := new(big.Int).Mul(new(big.Int).SetUint64(st.gas), st.gasPrice)
 	st.state.AddBalance(st.msg.From(), remaining)
 

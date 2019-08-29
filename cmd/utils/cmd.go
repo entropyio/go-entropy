@@ -24,7 +24,7 @@ func MakeFullNode(ctx *cli.Context) *node.Node {
 		RegisterDashboardService(stack, &cfg.Dashboard, GitCommit)
 	}
 
-	// add SSH service
+	// Whisper must be explicitly enabled by specifying at least 1 whisper flag or in dev mode
 	//shhEnabled := enableWhisper(ctx)
 	//shhAutoEnabled := !ctx.GlobalIsSet(utils.WhisperEnabledFlag.Name) && ctx.GlobalIsSet(utils.DeveloperFlag.Name)
 	//if shhEnabled || shhAutoEnabled {
@@ -34,7 +34,17 @@ func MakeFullNode(ctx *cli.Context) *node.Node {
 	//	if ctx.GlobalIsSet(utils.WhisperMinPOWFlag.Name) {
 	//		cfg.Shh.MinimumAcceptedPOW = ctx.Float64(utils.WhisperMinPOWFlag.Name)
 	//	}
+	//	if ctx.GlobalIsSet(utils.WhisperRestrictConnectionBetweenLightClientsFlag.Name) {
+	//		cfg.Shh.RestrictConnectionBetweenLightClients = true
+	//	}
 	//	utils.RegisterShhService(stack, &cfg.Shh)
+	//}
+
+	// Configure GraphQL if required
+	//if ctx.GlobalIsSet(GraphQLEnabledFlag.Name) {
+	//	if err := graphql.RegisterGraphQLService(stack, cfg.Node.GraphQLEndpoint(), cfg.Node.GraphQLCors, cfg.Node.GraphQLVirtualHosts, cfg.Node.HTTPTimeouts); err != nil {
+	//		Fatalf("Failed to register the Ethereum service: %v", err)
+	//	}
 	//}
 
 	// Add statistic service

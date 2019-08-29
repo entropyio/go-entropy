@@ -61,7 +61,7 @@ func TestSetupGenesis(t *testing.T) {
 				return SetupGenesisBlock(db, nil)
 			},
 			wantHash:   config.MainnetGenesisHash,
-			wantConfig: config.EthashChainConfig,
+			wantConfig: config.MainnetChainConfig,
 		},
 		{
 			name: "mainnet block in DB, genesis == nil",
@@ -70,7 +70,7 @@ func TestSetupGenesis(t *testing.T) {
 				return SetupGenesisBlock(db, nil)
 			},
 			wantHash:   config.MainnetGenesisHash,
-			wantConfig: config.EthashChainConfig,
+			wantConfig: config.MainnetChainConfig,
 		},
 		{
 			name: "custom block in DB, genesis == nil",
@@ -89,7 +89,7 @@ func TestSetupGenesis(t *testing.T) {
 			},
 			wantErr:    &GenesisMismatchError{Stored: customghash, New: config.TestnetGenesisHash},
 			wantHash:   config.TestnetGenesisHash,
-			wantConfig: config.CliqueChainConfig,
+			wantConfig: config.TestnetChainConfig,
 		},
 		{
 			name: "compatible config in DB",
@@ -107,7 +107,7 @@ func TestSetupGenesis(t *testing.T) {
 				// Advance to block #4, past the homestead transition block of customg.
 				genesis := oldcustomg.MustCommit(db)
 
-				bc, _ := blockchain.NewBlockChain(db, nil, oldcustomg.Config, ethash.NewFullFaker(), evm.Config{})
+				bc, _ := blockchain.NewBlockChain(db, nil, oldcustomg.Config, ethash.NewFullFaker(), evm.Config{}, nil)
 				defer bc.Stop()
 
 				blocks, _ := blockchain.GenerateChain(oldcustomg.Config, genesis, ethash.NewFaker(), db, 4, nil)
@@ -128,7 +128,7 @@ func TestSetupGenesis(t *testing.T) {
 	}
 
 	for _, test := range tests {
-		db := database.NewMemDatabase()
+		db := mapper.NewMemoryDatabase()
 		configObj, hash, err := test.fn(db)
 		// Check the return values.
 		if !reflect.DeepEqual(err, test.wantErr) {

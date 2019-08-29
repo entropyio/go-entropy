@@ -20,7 +20,7 @@ type journalEntry interface {
 // exception or revertal request.
 type journal struct {
 	entries []journalEntry         // Current changes tracked by the journal
-	dirties map[common.Address]int // Dirty account and the number of changes
+	dirties map[common.Address]int // Dirty accounts and the number of changes
 }
 
 // newJournal create a new initialized journal.
@@ -81,7 +81,7 @@ type (
 		prevbalance *big.Int
 	}
 
-	// Changes to individual account.
+	// Changes to individual accounts.
 	balanceChange struct {
 		account *common.Address
 		prev    *big.Int

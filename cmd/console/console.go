@@ -20,18 +20,17 @@ import (
 )
 
 var log = logger.NewLogger("[console]")
+var (
+	passwordRegexp = regexp.MustCompile(`personal.[nus]`)
+	onlyWhitespace = regexp.MustCompile(`^\s*$`)
+	exit           = regexp.MustCompile(`^\s*exit\s*;*\s*$`)
+)
 
 // HistoryFile is the file within the data directory to store input scrollback.
 const HistoryFile = "history"
 
 // DefaultPrompt is the default prompt line prefix to use for user input querying.
 const DefaultPrompt = "> "
-
-var (
-	passwordRegexp = regexp.MustCompile(`personal.[nus]`)
-	onlyWhitespace = regexp.MustCompile(`^\s*$`)
-	exit           = regexp.MustCompile(`^\s*exit\s*;*\s*$`)
-)
 
 // Config is the collection of configurations to fine tune the behavior of the
 // JavaScript console.
@@ -97,6 +96,7 @@ func (c *Console) init(preload []string) error {
 	// Initialize the JavaScript <-> Go RPC bridge
 	bridge := newBridge(c.client, c.prompter, c.printer)
 	c.jsre.Set("jEntropy", struct{}{})
+
 	// bridge jsApi JSON-RPC call to send
 	jEntropyObj, _ := c.jsre.Get("jEntropy")
 	jEntropyObj.Object().Set("send", bridge.Send)
@@ -107,27 +107,30 @@ func (c *Console) init(preload []string) error {
 	consoleObj.Object().Set("log", c.consoleOutput)
 	consoleObj.Object().Set("error", c.consoleOutput)
 
-	// Load all the internal utility JavaScript libraries
-	if err := c.jsre.Compile("bignumber.js", BigNumber_JS); err != nil {
+	//Load all the internal utility JavaScript libraries
+	if err := c.jsre.Compile("bignumber.js", BignumberJs); err != nil {
 		return fmt.Errorf("bignumber.js: %v", err)
 	}
-	if err := c.jsre.Compile("entropy3.js", Entropy3_JS); err != nil {
-		return fmt.Errorf("entropy3.js: %v", err)
+
+	// Load and set web3 namespace
+	if err := c.jsre.Compile("web3.js", Web3Js); err != nil {
+		return fmt.Errorf("web3.js: %v", err)
 	}
-	if _, err := c.jsre.Run("var Entropy3 = require('entropy3');"); err != nil {
-		return fmt.Errorf("entropy3 require: %v", err)
+	if _, err := c.jsre.Run("var Web3 = require('web3');"); err != nil {
+		return fmt.Errorf("web3 require: %v", err)
 	}
-	if _, err := c.jsre.Run("var entropy3 = new Entropy3(jEntropy);"); err != nil {
-		return fmt.Errorf("entropy3 provider: %v", err)
+	if _, err := c.jsre.Run("var web3 = new Web3(jEntropy);"); err != nil {
+		return fmt.Errorf("web3 provider: %v", err)
 	}
+
 	// Load the supported APIs into the JavaScript runtime environment
 	apis, err := c.client.SupportedModules()
 	if err != nil {
 		return fmt.Errorf("api modules: %v", err)
 	}
-	flatten := "var entropy = entropy3.entropy; var personal = entropy3.personal; "
+	flatten := "var entropy = web3.entropy; var personal = web3.personal; "
 	for api := range apis {
-		if api == "entropy3" {
+		if api == "web3" {
 			continue // manually mapped or ignore
 		}
 		if file, ok := deps.Modules[api]; ok {
@@ -135,17 +138,16 @@ func (c *Console) init(preload []string) error {
 			if err = c.jsre.Compile(fmt.Sprintf("%s.js", api), file); err != nil {
 				return fmt.Errorf("%s.js: %v", api, err)
 			}
-			flatten += fmt.Sprintf("var %s = entropy3.%s; ", api, api)
-		} else if obj, err := c.jsre.Run("entropy3." + api); err == nil && obj.IsObject() {
-			// Enable entropy3.js built-in extension if available.
-			flatten += fmt.Sprintf("var %s = entropy3.%s; ", api, api)
+			flatten += fmt.Sprintf("var %s = web3.%s; ", api, api)
+		} else if obj, err := c.jsre.Run("web3." + api); err == nil && obj.IsObject() {
+			// Enable web3.js built-in extension if available.
+			flatten += fmt.Sprintf("var %s = web3.%s; ", api, api)
 		}
 	}
+
 	if _, err = c.jsre.Run(flatten); err != nil {
 		return fmt.Errorf("namespace flattening: %v", err)
 	}
-	// Initialize the global name register (disabled for now)
-	//c.jsre.Run(`var GlobalRegistrar = entropy.contract(` + registrar.GlobalRegistrarAbi + `);   registrar = GlobalRegistrar.at("` + registrar.GlobalRegistrarAddr + `");`)
 
 	// If the console is in interactive mode, instrument password related methods to query the user
 	if c.prompter != nil {
@@ -156,8 +158,8 @@ func (c *Console) init(preload []string) error {
 		}
 		// Override the openWallet, unlockAccount, newAccount and sign methods since
 		// these require user interaction. Assign these method in the Console the
-		// original entropy3 callbacks. These will be called by the jEntropy.* methods after
-		// they got the password from the user and send the original entropy3 request to
+		// original web3 callbacks. These will be called by the jEntropy.* methods after
+		// they got the password from the user and send the original web3 request to
 		// the backend.
 		if obj := personal.Object(); obj != nil { // make sure the personal api is enabled over the interface
 			if _, err = c.jsre.Run(`jEntropy.openWallet = personal.openWallet;`); err != nil {
@@ -208,6 +210,7 @@ func (c *Console) init(preload []string) error {
 		}
 		c.prompter.SetWordCompleter(c.AutoCompleteInput)
 	}
+
 	return nil
 }
 
@@ -224,7 +227,7 @@ func (c *Console) clearHistory() {
 // consoleOutput is an override for the console.log and console.error methods to
 // stream the output into the configured output stream instead of stdout.
 func (c *Console) consoleOutput(call otto.FunctionCall) otto.Value {
-	output := []string{}
+	var output []string
 	for _, argument := range call.ArgumentList {
 		output = append(output, fmt.Sprintf("%v", argument))
 	}
@@ -240,15 +243,15 @@ func (c *Console) AutoCompleteInput(line string, pos int) (string, []string, str
 		return "", nil, ""
 	}
 	// Chunck data to relevant part for autocompletion
-	// E.g. in case of nested lines entropy.getBalance(entropy.coinb<tab><tab>
+	// E.g. in case of nested lines eth.getBalance(eth.coinb<tab><tab>
 	start := pos - 1
 	for ; start > 0; start-- {
 		// Skip all methods and namespaces (i.e. including the dot)
 		if line[start] == '.' || (line[start] >= 'a' && line[start] <= 'z') || (line[start] >= 'A' && line[start] <= 'Z') {
 			continue
 		}
-		// Handle entropy3 in a special way (i.e. other numbers aren't auto completed)
-		if start >= 3 && line[start-3:start] == "entropy3" {
+		// Handle web3 in a special way (i.e. other numbers aren't auto completed)
+		if start >= 3 && line[start-3:start] == "web3" {
 			start -= 3
 			continue
 		}
@@ -265,7 +268,7 @@ func (c *Console) Welcome() {
 	// Print some generic Entropy metadata
 	fmt.Fprintf(c.printer, "Welcome to the Entropy JavaScript console!\n\n")
 
-	//console.logger("instance: " + entropy3.version.node);
+	//console.logger("instance: " + web3.version.node);
 
 	c.jsre.Run(`
 		console.log(entropy.version());
@@ -273,6 +276,8 @@ func (c *Console) Welcome() {
 		console.log(" at block: " + entropy.blockNumber());
 		console.log(" datadir: " + admin.datadir());
 	`)
+
+	message := ""
 	//List all the supported modules for the user to call
 	if apis, err := c.client.SupportedModules(); err == nil {
 		modules := make([]string, 0, len(apis))
@@ -280,9 +285,9 @@ func (c *Console) Welcome() {
 			modules = append(modules, fmt.Sprintf("%s:%s", api, version))
 		}
 		sort.Strings(modules)
-		fmt.Fprintln(c.printer, "modules:", strings.Join(modules, " "))
+		message += " modules: " + strings.Join(modules, " ") + "\n"
 	}
-	fmt.Fprintln(c.printer)
+	fmt.Fprintln(c.printer, message)
 }
 
 // Evaluate executes code and pretty prints the result to the specified output
@@ -305,7 +310,7 @@ func (c *Console) Interactive() {
 		input     = ""                // Current user input
 		scheduler = make(chan string) // Channel to send the next prompt on and receive the input
 	)
-	// Start a goroutine to listen for promt requests and send back inputs
+	// Start a goroutine to listen for prompt requests and send back inputs
 	go func() {
 		for {
 			// Read the next user input

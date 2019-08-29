@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"io/ioutil"
 
-	"gopkg.in/urfave/cli.v1"
 	"github.com/entropyio/go-entropy/cmd/evm/internal/compiler"
+	"gopkg.in/urfave/cli.v1"
 )
 
 var compileCommand = cli.Command{

@@ -1,8 +1,8 @@
 package main
 
 import (
-	"gopkg.in/urfave/cli.v1"
 	"github.com/entropyio/go-entropy/blockchain/state"
+	"gopkg.in/urfave/cli.v1"
 )
 
 var stateTestCommand = cli.Command{

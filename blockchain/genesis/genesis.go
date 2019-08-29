@@ -121,7 +121,7 @@ type GenesisMismatchError struct {
 }
 
 func (e *GenesisMismatchError) Error() string {
-	return fmt.Sprintf("database already contains an incompatible genesis block (have %x, new %x)", e.Stored[:8], e.New[:8])
+	return fmt.Sprintf("database contains incompatible genesis (have %x, new %x)", e.Stored, e.New)
 }
 
 // SetupGenesisBlock writes or updates the genesis block in db.
@@ -139,9 +139,8 @@ func (e *GenesisMismatchError) Error() string {
 // The returned chain configuration is never nil.
 func SetupGenesisBlock(db database.Database, genesis *Genesis) (*config.ChainConfig, common.Hash, error) {
 	if genesis != nil && genesis.Config == nil {
-		return config.GetSelectedChainConfig(), common.Hash{}, errGenesisNoConfig
+		return config.DefaultChainConfig, common.Hash{}, errGenesisNoConfig
 	}
-
 	// Just commit the new block if there is no stored genesis block.
 	stored := mapper.ReadCanonicalHash(db, 0)
 	if (stored == common.Hash{}) {
@@ -152,7 +151,29 @@ func SetupGenesisBlock(db database.Database, genesis *Genesis) (*config.ChainCon
 			genesisLog.Info("Writing custom genesis block")
 		}
 		block, err := genesis.Commit(db)
-		return genesis.Config, block.Hash(), err
+		if err != nil {
+			return genesis.Config, common.Hash{}, err
+		}
+		return genesis.Config, block.Hash(), nil
+	}
+
+	// We have the genesis block in database(perhaps in ancient database)
+	// but the corresponding state is missing.
+	header := mapper.ReadHeader(db, stored, 0)
+	if _, err := state.New(header.Root, state.NewDatabaseWithCache(db, 0)); err != nil {
+		if genesis == nil {
+			genesis = DefaultGenesisBlock()
+		}
+		// Ensure the stored genesis matches with the given one.
+		hash := genesis.ToBlock(nil).Hash()
+		if hash != stored {
+			return genesis.Config, hash, &GenesisMismatchError{stored, hash}
+		}
+		block, err := genesis.Commit(db)
+		if err != nil {
+			return genesis.Config, hash, err
+		}
+		return genesis.Config, block.Hash(), nil
 	}
 
 	// Check whether the genesis block is already written.
@@ -164,29 +185,32 @@ func SetupGenesisBlock(db database.Database, genesis *Genesis) (*config.ChainCon
 	}
 
 	// Get the existing chain configuration.
-	newcfg := genesis.configOrDefault(stored)
-	storedcfg := mapper.ReadChainConfig(db, stored)
-	if storedcfg == nil {
+	newConfig := genesis.configOrDefault(stored)
+	storedConfig := mapper.ReadChainConfig(db, stored)
+	if storedConfig == nil {
 		genesisLog.Warning("Found genesis block without chain config")
-		mapper.WriteChainConfig(db, stored, newcfg)
-		return newcfg, stored, nil
+		mapper.WriteChainConfig(db, stored, newConfig)
+		return newConfig, stored, nil
 	}
 	// Special case: don't change the existing config of a non-mainnet chain if no new
 	// config is supplied. These chains would get AllProtocolChanges (and a compat error)
 	// if we just continued here.
 	if genesis == nil && stored != config.MainnetGenesisHash {
-		return storedcfg, stored, nil
+		return storedConfig, stored, nil
 	}
 
 	// Check config compatibility and write the config. Compatibility errors
 	// are returned to the caller unless we're already at block zero.
 	height := mapper.ReadHeaderNumber(db, mapper.ReadHeadHeaderHash(db))
 	if height == nil {
-		return newcfg, stored, fmt.Errorf("missing block number for head header hash")
+		return newConfig, stored, fmt.Errorf("missing block number for head header hash")
 	}
-
-	mapper.WriteChainConfig(db, stored, newcfg)
-	return newcfg, stored, nil
+	compatErr := storedConfig.CheckCompatible(newConfig, *height)
+	if compatErr != nil && *height != 0 && compatErr.RewindTo != 0 {
+		return newConfig, stored, compatErr
+	}
+	mapper.WriteChainConfig(db, stored, newConfig)
+	return newConfig, stored, nil
 }
 
 func (g *Genesis) configOrDefault(ghash common.Hash) *config.ChainConfig {
@@ -194,11 +218,11 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *config.ChainConfig {
 	case g != nil:
 		return g.Config
 	case ghash == config.MainnetGenesisHash:
-		return config.EthashChainConfig
+		return config.MainnetChainConfig
 	case ghash == config.TestnetGenesisHash:
-		return config.EthashChainConfig
+		return config.TestnetChainConfig
 	default:
-		return config.EthashChainConfig
+		return config.DefaultChainConfig
 	}
 }
 
@@ -206,7 +230,7 @@ func (g *Genesis) configOrDefault(ghash common.Hash) *config.ChainConfig {
 // to the given database (or discards it if nil).
 func (g *Genesis) ToBlock(db database.Database) *model.Block {
 	if db == nil {
-		db = database.NewMemDatabase()
+		db = mapper.NewMemoryDatabase()
 	}
 	statedb, _ := state.New(common.Hash{}, state.NewDatabase(db))
 	for addr, account := range g.Alloc {
@@ -226,7 +250,7 @@ func (g *Genesis) ToBlock(db database.Database) *model.Block {
 	head := &model.Header{
 		Number:     new(big.Int).SetUint64(g.Number),
 		Nonce:      model.EncodeNonce(g.Nonce),
-		Time:       new(big.Int).SetUint64(g.Timestamp),
+		Time:       g.Timestamp,
 		ParentHash: g.ParentHash,
 		Extra:      g.ExtraData,
 		GasLimit:   g.GasLimit,
@@ -266,11 +290,12 @@ func (g *Genesis) Commit(db database.Database) (*model.Block, error) {
 	mapper.WriteReceipts(db, block.Hash(), block.NumberU64(), nil)
 	mapper.WriteCanonicalHash(db, block.Hash(), block.NumberU64())
 	mapper.WriteHeadBlockHash(db, block.Hash())
+	mapper.WriteHeadFastBlockHash(db, block.Hash())
 	mapper.WriteHeadHeaderHash(db, block.Hash())
 
 	configObj := g.Config
 	if configObj == nil {
-		configObj = config.GetSelectedChainConfig()
+		configObj = config.DefaultChainConfig
 	}
 	mapper.WriteChainConfig(db, block.Hash(), configObj)
 
@@ -297,7 +322,7 @@ func GenesisBlockForTesting(db database.Database, addr common.Address, balance *
 // DefaultGenesisBlock returns the Entropy main net genesis block.
 func DefaultGenesisBlock() *Genesis {
 	return &Genesis{
-		Config:     config.GetSelectedChainConfig(),
+		Config:     config.MainnetChainConfig,
 		Nonce:      66,
 		ExtraData:  hexutil.MustDecode("0x11bbe8db4e347b4e8c937c1c8370e4b5ed33adb3db69cbdb7a38e1e50b1b82fa"),
 		GasLimit:   5000,
@@ -309,7 +334,7 @@ func DefaultGenesisBlock() *Genesis {
 // DefaultTestnetGenesisBlock returns the Ropsten network genesis block.
 func DefaultTestnetGenesisBlock() *Genesis {
 	return &Genesis{
-		Config:     config.GetSelectedChainConfig(),
+		Config:     config.TestnetChainConfig,
 		Nonce:      66,
 		ExtraData:  hexutil.MustDecode("0x3535353535353535353535353535353535353535353535353535353535353535"),
 		GasLimit:   16777216,
@@ -322,7 +347,7 @@ func DefaultTestnetGenesisBlock() *Genesis {
 // be seeded with the
 func DeveloperGenesisBlock(period uint64, faucet common.Address) *Genesis {
 	// Override the default period to the user requested one
-	configObj := *config.GetSelectedChainConfig()
+	configObj := *config.DefaultChainConfig
 	configObj.Clique.Period = period
 
 	// Assemble and return the genesis with the precompiles and faucet pre-funded
@@ -340,7 +365,7 @@ func DeveloperGenesisBlock(period uint64, faucet common.Address) *Genesis {
 			common.BytesToAddress([]byte{6}): {Balance: big.NewInt(1)}, // ECAdd
 			common.BytesToAddress([]byte{7}): {Balance: big.NewInt(1)}, // ECScalarMul
 			common.BytesToAddress([]byte{8}): {Balance: big.NewInt(1)}, // ECPairing
-			faucet: {Balance: new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(9))},
+			faucet:                           {Balance: new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), 256), big.NewInt(9))},
 		},
 	}
 }
@@ -355,18 +380,6 @@ func decodePrealloc(data string) GenesisAlloc {
 		ga[common.BigToAddress(account.Addr)] = GenesisAccount{Balance: account.Balance}
 	}
 	return ga
-}
-
-// DefaultRinkebyGenesisBlock returns the Rinkeby network genesis block.
-func DefaultRinkebyGenesisBlock() *Genesis {
-	return &Genesis{
-		Config:     config.GetSelectedChainConfig(),
-		Timestamp:  1492009146,
-		ExtraData:  hexutil.MustDecode("0x52657370656374206d7920617574686f7269746168207e452e436172746d616e42eb768f2244c8811c63729a21a3569731535f067ffc57839b00206d1ad20c69a1981b489f772031b279182d99e65703f0076e4812653aab85fca0f00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"),
-		GasLimit:   4700000,
-		Difficulty: big.NewInt(1),
-		Alloc:      decodePrealloc(rinkebyAllocData),
-	}
 }
 
 func initGenesisClaudeContext(g *Genesis, db *trie.TrieDatabase) *model.ClaudeContext {

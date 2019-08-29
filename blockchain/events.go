@@ -13,9 +13,6 @@ type PendingLogsEvent struct {
 	Logs []*model.Log
 }
 
-// PendingStateEvent is posted pre mining and notifies of pending state changes.
-type PendingStateEvent struct{}
-
 // NewMinedBlockEvent is posted when a block has been imported.
 type NewMinedBlockEvent struct{ Block *model.Block }
 

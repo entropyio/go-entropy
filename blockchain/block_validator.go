@@ -38,12 +38,6 @@ func (v *BlockValidator) ValidateBody(block *model.Block) error {
 	if v.bc.HasBlockAndState(block.Hash(), block.NumberU64()) {
 		return ErrKnownBlock
 	}
-	if !v.bc.HasBlockAndState(block.ParentHash(), block.NumberU64()-1) {
-		if !v.bc.HasBlock(block.ParentHash(), block.NumberU64()-1) {
-			return consensus.ErrUnknownAncestor
-		}
-		return consensus.ErrPrunedAncestor
-	}
 	// Header validity is known at this point, check the uncles and transactions
 	header := block.Header()
 	if err := v.engine.VerifyUncles(v.bc, block); err != nil {
@@ -55,6 +49,12 @@ func (v *BlockValidator) ValidateBody(block *model.Block) error {
 	if hash := model.DeriveSha(block.Transactions()); hash != header.TxHash {
 		return fmt.Errorf("transaction root hash mismatch: have %x, want %x", hash, header.TxHash)
 	}
+	if !v.bc.HasBlockAndState(block.ParentHash(), block.NumberU64()-1) {
+		if !v.bc.HasBlock(block.ParentHash(), block.NumberU64()-1) {
+			return consensus.ErrUnknownAncestor
+		}
+		return consensus.ErrPrunedAncestor
+	}
 	return nil
 }
 
@@ -62,8 +62,8 @@ func (v *BlockValidator) ValidateBody(block *model.Block) error {
 // transition, such as amount of used gas, the receipt roots and the state root
 // itself. ValidateState returns a database batch if the validation was a success
 // otherwise nil and an error is returned.
-func (v *BlockValidator) ValidateState(block, parent *model.Block, statedb *state.StateDB, receipts model.Receipts, usedGas uint64) error {
-	blockChainLog.Debug("ValidateState: ", block.NumberU64(), block, parent.NumberU64(), parent, statedb, receipts, usedGas)
+func (v *BlockValidator) ValidateState(block *model.Block, statedb *state.StateDB, receipts model.Receipts, usedGas uint64) error {
+	blockChainLog.Debug("ValidateState: ", block.NumberU64(), block, statedb, receipts, usedGas)
 
 	header := block.Header()
 	if block.GasUsed() != usedGas {
@@ -82,15 +82,17 @@ func (v *BlockValidator) ValidateState(block, parent *model.Block, statedb *stat
 	}
 	// Validate the state root against the received state root and throw
 	// an error if they don't match.
-	if root := statedb.IntermediateRoot(v.config.IsHomestead(header.Number)); header.Root != root {
+	if root := statedb.IntermediateRoot(v.config.IsEIP158(header.Number)); header.Root != root {
 		return fmt.Errorf("invalid merkle root (remote: %x local: %x)", header.Root, root)
 	}
 	return nil
 }
 
-// CalcGasLimit computes the gas limit of the next block after parent.
-// This is miner strategy, not consensus protocol.
-func CalcGasLimit(parent *model.Block) uint64 {
+// CalcGasLimit computes the gas limit of the next block after parent. It aims
+// to keep the baseline gas above the provided floor, and increase it towards the
+// ceil if the blocks are full. If the ceil is exceeded, it will always decrease
+// the gas allowance.
+func CalcGasLimit(parent *model.Block, gasFloor, gasCeil uint64) uint64 {
 	// contrib = (parentGasUsed * 3 / 2) / 1024
 	contrib := (parent.GasUsed() + parent.GasUsed()/2) / config.GasLimitBoundDivisor
 
@@ -108,12 +110,16 @@ func CalcGasLimit(parent *model.Block) uint64 {
 	if limit < config.MinGasLimit {
 		limit = config.MinGasLimit
 	}
-	// however, if we're now below the target (TargetGasLimit) we increase the
-	// limit as much as we can (parentGasLimit / 1024 -1)
-	if limit < config.TargetGasLimit {
+	// If we're outside our allowed gas range, we try to hone towards them
+	if limit < gasFloor {
 		limit = parent.GasLimit() + decay
-		if limit > config.TargetGasLimit {
-			limit = config.TargetGasLimit
+		if limit > gasFloor {
+			limit = gasFloor
+		}
+	} else if limit > gasCeil {
+		limit = parent.GasLimit() - decay
+		if limit < gasCeil {
+			limit = gasCeil
 		}
 	}
 	blockChainLog.Debugf("CalcGasLimit: parent number=%d, limit=%d, hash=%X", parent.NumberU64(), limit, parent.Hash())

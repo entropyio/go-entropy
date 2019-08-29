@@ -27,12 +27,12 @@ The output of this command is supposed to be machine-readable.
 
 func version(ctx *cli.Context) error {
 	versionLogger.Debug(strings.Title(utils.ClientIdentifier))
-	fmt.Println("Version:", "1.1.0")
+	fmt.Println("Version:", "1.9.0")
 	if utils.GitCommit != "" {
 		fmt.Println("Git Commit:", utils.GitCommit)
 	}
 	fmt.Println("Architecture:", runtime.GOARCH)
-	fmt.Println("Protocol Versions:", "1.1.0")
+	fmt.Println("Protocol Versions:", "1.9.0")
 	fmt.Println("Network Id:", "ID12345")
 	fmt.Println("Go Version:", runtime.Version())
 	fmt.Println("Operating System:", runtime.GOOS)

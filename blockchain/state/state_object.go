@@ -6,8 +6,10 @@ import (
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/metrics"
 	"io"
 	"math/big"
+	"time"
 )
 
 var emptyCodeHash = crypto.Keccak256(nil)
@@ -62,7 +64,7 @@ type stateObject struct {
 	trie Trie // storage trie, which becomes non-nil on first access
 	code Code // contract bytecode, which gets set when code is loaded
 
-	cachedStorage Storage // Storage entry cache to avoid duplicate reads
+	originStorage Storage // Storage cache of original entries to dedup rewrites
 	dirtyStorage  Storage // Storage entries that need to be flushed to disk
 
 	// Cache flags.
@@ -78,7 +80,7 @@ func (state *stateObject) empty() bool {
 	return state.data.Nonce == 0 && state.data.Balance.Sign() == 0 && bytes.Equal(state.data.CodeHash, emptyCodeHash)
 }
 
-// Account is the Entropy consensus representation of account.
+// Account is the Entropy consensus representation of accounts.
 // These objects are stored in the main account trie.
 type Account struct {
 	Nonce    uint64
@@ -100,7 +102,7 @@ func newObject(db *StateDB, address common.Address, data Account) *stateObject {
 		address:       address,
 		addrHash:      crypto.Keccak256Hash(address[:]),
 		data:          data,
-		cachedStorage: make(Storage),
+		originStorage: make(Storage),
 		dirtyStorage:  make(Storage),
 	}
 }
@@ -144,13 +146,29 @@ func (state *stateObject) getTrie(db StateDatabase) Trie {
 	return state.trie
 }
 
-// GetState returns a value in account storage.
+// GetState retrieves a value from the account storage trie.
 func (state *stateObject) GetState(db StateDatabase, key common.Hash) common.Hash {
-	value, exists := state.cachedStorage[key]
-	if exists {
+	// If we have a dirty value for this state entry, return it
+	value, dirty := state.dirtyStorage[key]
+	if dirty {
 		return value
 	}
-	// Load from DB in case it is missing.
+	// Otherwise return the entry's original value
+	return state.GetCommittedState(db, key)
+}
+
+// GetCommittedState retrieves a value from the committed account storage trie.
+func (state *stateObject) GetCommittedState(db StateDatabase, key common.Hash) common.Hash {
+	// If we have the original value cached, return that
+	value, cached := state.originStorage[key]
+	if cached {
+		return value
+	}
+	// Track the amount of time wasted on reading the storge trie
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { state.db.StorageReads += time.Since(start) }(time.Now())
+	}
+	// Otherwise load the value from the database
 	enc, err := state.getTrie(db).TryGet(key[:])
 	if err != nil {
 		state.setError(err)
@@ -163,30 +181,47 @@ func (state *stateObject) GetState(db StateDatabase, key common.Hash) common.Has
 		}
 		value.SetBytes(content)
 	}
-	state.cachedStorage[key] = value
+	state.originStorage[key] = value
 	return value
 }
 
 // SetState updates a value in account storage.
 func (state *stateObject) SetState(db StateDatabase, key, value common.Hash) {
+	// If the new value is the same as old, don't set
+	prev := state.GetState(db, key)
+	if prev == value {
+		return
+	}
+	// New value is different, update and journal the change
 	state.db.journal.append(storageChange{
 		account:  &state.address,
 		key:      key,
-		prevalue: state.GetState(db, key),
+		prevalue: prev,
 	})
 	state.setState(key, value)
 }
 
 func (state *stateObject) setState(key, value common.Hash) {
-	state.cachedStorage[key] = value
 	state.dirtyStorage[key] = value
 }
 
 // updateTrie writes cached storage modifications into the object's storage trie.
 func (state *stateObject) updateTrie(db StateDatabase) Trie {
+	// Track the amount of time wasted on updating the storge trie
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { state.db.StorageUpdates += time.Since(start) }(time.Now())
+	}
+	// Update all the dirty slots in the trie
 	tr := state.getTrie(db)
 	for key, value := range state.dirtyStorage {
 		delete(state.dirtyStorage, key)
+
+		// Skip noop changes, persist actual changes
+		if value == state.originStorage[key] {
+			continue
+		}
+		state.originStorage[key] = value
+
 		if (value == common.Hash{}) {
 			state.setError(tr.TryDelete(key[:]))
 			continue
@@ -201,6 +236,11 @@ func (state *stateObject) updateTrie(db StateDatabase) Trie {
 // UpdateRoot sets the trie root to the current root hash of
 func (state *stateObject) updateRoot(db StateDatabase) {
 	state.updateTrie(db)
+
+	// Track the amount of time wasted on hashing the storge trie
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { state.db.StorageHashes += time.Since(start) }(time.Now())
+	}
 	state.data.Root = state.trie.Hash()
 }
 
@@ -210,6 +250,10 @@ func (state *stateObject) CommitTrie(db StateDatabase) error {
 	state.updateTrie(db)
 	if state.dbErr != nil {
 		return state.dbErr
+	}
+	// Track the amount of time wasted on committing the storge trie
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { state.db.StorageCommits += time.Since(start) }(time.Now())
 	}
 	root, err := state.trie.Commit(nil)
 	if err == nil {
@@ -264,7 +308,7 @@ func (state *stateObject) deepCopy(stateDB *StateDB) *stateObject {
 	}
 	stateObject.code = state.code
 	stateObject.dirtyStorage = state.dirtyStorage.Copy()
-	stateObject.cachedStorage = state.dirtyStorage.Copy()
+	stateObject.originStorage = state.originStorage.Copy()
 	stateObject.suicided = state.suicided
 	stateObject.dirtyCode = state.dirtyCode
 	stateObject.deleted = state.deleted

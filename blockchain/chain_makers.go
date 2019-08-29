@@ -16,12 +16,11 @@ import (
 // BlockGen creates blocks for testing.
 // See GenerateChain for a detailed explanation.
 type BlockGen struct {
-	i           int
-	parent      *model.Block
-	chain       []*model.Block
-	chainReader consensus.ChainReader
-	header      *model.Header
-	statedb     *state.StateDB
+	i       int
+	parent  *model.Block
+	chain   []*model.Block
+	header  *model.Header
+	statedb *state.StateDB
 
 	gasPool  *GasPool
 	txs      []*model.Transaction
@@ -48,6 +47,18 @@ func (b *BlockGen) SetCoinbase(addr common.Address) {
 // SetExtra sets the extra data field of the generated block.
 func (b *BlockGen) SetExtra(data []byte) {
 	b.header.Extra = data
+}
+
+// SetNonce sets the nonce field of the generated block.
+func (b *BlockGen) SetNonce(nonce model.BlockNonce) {
+	b.header.Nonce = nonce
+}
+
+// SetDifficulty sets the difficulty field of the generated block. This method is
+// useful for Clique tests where the difficulty does not depend on time. For the
+// ethash tests, please use OffsetTime, which implicitly recalculates the diff.
+func (b *BlockGen) SetDifficulty(diff *big.Int) {
+	b.header.Difficulty = diff
 }
 
 // AddTx adds a transaction to the generated block. If no coinbase has
@@ -83,6 +94,15 @@ func (b *BlockGen) AddTxWithChain(bc *BlockChain, tx *model.Transaction) {
 	b.receipts = append(b.receipts, receipt)
 }
 
+// AddUncheckedTx forcefully adds a transaction to the block without any
+// validation.
+//
+// AddUncheckedTx will cause consensus failures when used during real
+// chain processing. This is best used in conjunction with raw block insertion.
+func (b *BlockGen) AddUncheckedTx(tx *model.Transaction) {
+	b.txs = append(b.txs, tx)
+}
+
 // Number returns the block number of the block being generated.
 func (b *BlockGen) Number() *big.Int {
 	return new(big.Int).Set(b.header.Number)
@@ -116,7 +136,7 @@ func (b *BlockGen) AddUncle(h *model.Header) {
 // For index -1, PrevBlock returns the parent block given to GenerateChain.
 func (b *BlockGen) PrevBlock(index int) *model.Block {
 	if index >= b.i {
-		panic("block index out of range")
+		panic(fmt.Errorf("block index %d out of range (%d,%d)", index, -1, b.i))
 	}
 	if index == -1 {
 		return b.parent
@@ -128,11 +148,12 @@ func (b *BlockGen) PrevBlock(index int) *model.Block {
 // associated difficulty. It's useful to test scenarios where forking is not
 // tied to chain length directly.
 func (b *BlockGen) OffsetTime(seconds int64) {
-	b.header.Time.Add(b.header.Time, new(big.Int).SetInt64(seconds))
-	if b.header.Time.Cmp(b.parent.Header().Time) <= 0 {
+	b.header.Time += uint64(seconds)
+	if b.header.Time <= b.parent.Header().Time {
 		panic("block time out of range")
 	}
-	b.header.Difficulty = b.engine.CalcDifficulty(b.chainReader, b.header.Time.Uint64(), b.parent.Header())
+	chainreader := &fakeChainReader{config: b.config}
+	b.header.Difficulty = b.engine.CalcDifficulty(chainreader, b.header.Time, b.parent.Header())
 }
 
 // GenerateChain creates a chain of n blocks. The first block's
@@ -152,15 +173,12 @@ func GenerateChain(configObj *config.ChainConfig, parent *model.Block, engine co
 		configObj = config.TestChainConfig
 	}
 	blocks, receipts := make(model.Blocks, n), make([]model.Receipts, n)
+	chainreader := &fakeChainReader{config: configObj}
 	genblock := func(i int, parent *model.Block, statedb *state.StateDB) (*model.Block, model.Receipts) {
 		blockChainLog.Debugf("chain maker genblock: number=%d, parent=%X", i, parent.Hash())
-		// TODO(karalabe): This is needed for pos, which depends on multiple blocks.
-		// It's nonetheless ugly to spin up a blockchain here. Get rid of this somehow.
-		blockchain, _ := NewBlockChain(db, nil, configObj, engine, evm.Config{})
-		defer blockchain.Stop()
 
-		b := &BlockGen{i: i, parent: parent, chain: blocks, chainReader: blockchain, statedb: statedb, config: configObj, engine: engine}
-		b.header = makeHeader(b.chainReader, parent, statedb, b.engine)
+		b := &BlockGen{i: i, chain: blocks, parent: parent, statedb: statedb, config: configObj, engine: engine}
+		b.header = makeHeader(chainreader, parent, statedb, b.engine)
 
 		// Execute any user modifications to the block and finalize it
 		if gen != nil {
@@ -169,9 +187,11 @@ func GenerateChain(configObj *config.ChainConfig, parent *model.Block, engine co
 		}
 
 		if b.engine != nil {
-			block, _ := b.engine.Finalize(b.chainReader, b.header, statedb, b.txs, b.uncles, b.receipts, nil) // FIXME: set claudeContext here
+			// Finalize and seal the block -- TODO: set claudeContext here  -- wang
+			block, _ := b.engine.FinalizeAndAssemble(chainreader, b.header, statedb, b.txs, b.uncles, b.receipts, nil)
+
 			// Write state changes to db
-			root, err := statedb.Commit(configObj.IsHomestead(b.header.Number))
+			root, err := statedb.Commit(configObj.IsEIP158(b.header.Number))
 			if err != nil {
 				panic(fmt.Sprintf("state write error: %v", err))
 			}
@@ -197,25 +217,24 @@ func GenerateChain(configObj *config.ChainConfig, parent *model.Block, engine co
 }
 
 func makeHeader(chain consensus.ChainReader, parent *model.Block, state *state.StateDB, engine consensus.Engine) *model.Header {
-	var time *big.Int
-	if parent.Time() == nil {
-		time = big.NewInt(10)
+	var time uint64
+	if parent.Time() == 0 {
+		time = 10
 	} else {
-		time = new(big.Int).Add(parent.Time(), big.NewInt(10)) // block time is fixed at 10 seconds
+		time = parent.Time() + 10 // block time is fixed at 10 seconds
 	}
 
 	return &model.Header{
 		Root:       state.IntermediateRoot(chain.Config().IsHomestead(parent.Number())),
 		ParentHash: parent.Hash(),
 		Coinbase:   parent.Coinbase(),
-		Difficulty: engine.CalcDifficulty(chain, time.Uint64(), &model.Header{
-			Number:        parent.Number(),
-			Time:          new(big.Int).Sub(time, big.NewInt(10)),
-			Difficulty:    parent.Difficulty(),
-			UncleHash:     parent.UncleHash(),
-			ClaudeCtxHash: &model.ClaudeContextHash{},
+		Difficulty: engine.CalcDifficulty(chain, time, &model.Header{
+			Number:     parent.Number(),
+			Time:       time - 10,
+			Difficulty: parent.Difficulty(),
+			UncleHash:  parent.UncleHash(),
 		}),
-		GasLimit: CalcGasLimit(parent),
+		GasLimit: CalcGasLimit(parent, parent.GasLimit(), parent.GasLimit()),
 		Number:   new(big.Int).Add(parent.Number(), common.Big1),
 		Time:     time,
 
@@ -242,3 +261,19 @@ func makeBlockChain(parent *model.Block, n int, engine consensus.Engine, db data
 	})
 	return blocks
 }
+
+type fakeChainReader struct {
+	config  *config.ChainConfig
+	genesis *model.Block
+}
+
+// Config returns the chain configuration.
+func (cr *fakeChainReader) Config() *config.ChainConfig {
+	return cr.config
+}
+
+func (cr *fakeChainReader) CurrentHeader() *model.Header                            { return nil }
+func (cr *fakeChainReader) GetHeaderByNumber(number uint64) *model.Header           { return nil }
+func (cr *fakeChainReader) GetHeaderByHash(hash common.Hash) *model.Header          { return nil }
+func (cr *fakeChainReader) GetHeader(hash common.Hash, number uint64) *model.Header { return nil }
+func (cr *fakeChainReader) GetBlock(hash common.Hash, number uint64) *model.Block   { return nil }

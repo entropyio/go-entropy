@@ -10,19 +10,26 @@ import (
 )
 
 // ReadDatabaseVersion retrieves the version number of the database.
-func ReadDatabaseVersion(db database.DBReader) int {
-	var version int
+func ReadDatabaseVersion(db database.KeyValueReader) *uint64 {
+	var version uint64
 
 	enc, _ := db.Get(databaseVerisionKey)
-	rlputil.DecodeBytes(enc, &version)
+	if len(enc) == 0 {
+		return nil
+	}
+	if err := rlputil.DecodeBytes(enc, &version); err != nil {
+		return nil
+	}
 
-	//mapperLog.Debugf("ReadDatabaseVersion: key=%s, key=%X, version=%d", databaseVerisionKey, databaseVerisionKey, version)
-	return version
+	return &version
 }
 
 // WriteDatabaseVersion stores the version number of the database
-func WriteDatabaseVersion(db database.DBWriter, version int) {
-	enc, _ := rlputil.EncodeToBytes(version)
+func WriteDatabaseVersion(db database.KeyValueWriter, version uint64) {
+	enc, err := rlputil.EncodeToBytes(version)
+	if err != nil {
+		mapperLog.Critical("Failed to encode database version", "err", err)
+	}
 	if err := db.Put(databaseVerisionKey, enc); err != nil {
 		mapperLog.Critical("Failed to store the database version", "err", err)
 	}
@@ -30,10 +37,10 @@ func WriteDatabaseVersion(db database.DBWriter, version int) {
 }
 
 // ReadChainConfig retrieves the consensus settings based on the given genesis hash.
-func ReadChainConfig(db database.DBReader, hash common.Hash) *config.ChainConfig {
+func ReadChainConfig(db database.KeyValueReader, hash common.Hash) *config.ChainConfig {
 	key := configKey(hash)
 	data, _ := db.Get(key)
-	mapperLog.Debugf("ReadChainConfig: key=%s, key=%X, data=%X", configPrefix, key, data)
+	//mapperLog.Debugf("ReadChainConfig: key=%s, key=%X, data=%X", configPrefix, key, data)
 
 	if len(data) == 0 {
 		return nil
@@ -47,7 +54,7 @@ func ReadChainConfig(db database.DBReader, hash common.Hash) *config.ChainConfig
 }
 
 // WriteChainConfig writes the chain config settings to the database.
-func WriteChainConfig(db database.DBWriter, hash common.Hash, cfg *config.ChainConfig) {
+func WriteChainConfig(db database.KeyValueWriter, hash common.Hash, cfg *config.ChainConfig) {
 	if cfg == nil {
 		return
 	}
@@ -60,26 +67,26 @@ func WriteChainConfig(db database.DBWriter, hash common.Hash, cfg *config.ChainC
 		mapperLog.Critical("Failed to store chain config", "err", err)
 	}
 
-	mapperLog.Debugf("WriteChainConfig: key=%s, key=%X, data=%X", configPrefix, key, data)
+	//mapperLog.Debugf("WriteChainConfig: key=%s, key=%X, data=%X", configPrefix, key, data)
 }
 
 // ReadPreimage retrieves a single preimage of the provided hash.
-func ReadPreimage(db database.DBReader, hash common.Hash) []byte {
+func ReadPreimage(db database.KeyValueReader, hash common.Hash) []byte {
 	key := preimageKey(hash)
 	data, _ := db.Get(key)
-	mapperLog.Debugf("ReadPreimage: key=%s, key=%X, data=%X", preimagePrefix, key, data)
+	//mapperLog.Debugf("ReadPreimage: key=%s, key=%X, data=%X", preimagePrefix, key, data)
 	return data
 }
 
 // WritePreimages writes the provided set of preimages to the database. `number` is the
 // current block number, and is used for debug messages only.
-func WritePreimages(db database.DBWriter, number uint64, preimages map[common.Hash][]byte) {
+func WritePreimages(db database.KeyValueWriter, preimages map[common.Hash][]byte) {
 	for hash, preimage := range preimages {
 		key := preimageKey(hash)
 		if err := db.Put(key, preimage); err != nil {
 			mapperLog.Critical("Failed to store trie preimage", "err", err)
 		}
-		mapperLog.Debugf("WritePreimages: key=%s, key=%X, blockNum=%d, data=%X", preimagePrefix, key, number, preimage)
+		//mapperLog.Debugf("WritePreimages: key=%s, key=%X, data=%X", preimagePrefix, key, preimage)
 	}
 	preimageCounter.Inc(int64(len(preimages)))
 	preimageHitCounter.Inc(int64(len(preimages)))

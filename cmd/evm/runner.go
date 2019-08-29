@@ -11,16 +11,16 @@ import (
 	"runtime/pprof"
 	"time"
 
-	"gopkg.in/urfave/cli.v1"
-	"github.com/entropyio/go-entropy/cmd/utils"
-	"github.com/entropyio/go-entropy/blockchain/state"
-	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/cmd/evm/internal/compiler"
 	"github.com/entropyio/go-entropy/blockchain/genesis"
-	"github.com/entropyio/go-entropy/evm"
+	"github.com/entropyio/go-entropy/blockchain/state"
+	"github.com/entropyio/go-entropy/cmd/evm/internal/compiler"
+	"github.com/entropyio/go-entropy/cmd/utils"
+	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/database"
+	"github.com/entropyio/go-entropy/evm"
 	"github.com/entropyio/go-entropy/evm/runtime"
+	"gopkg.in/urfave/cli.v1"
 )
 
 var runCommand = cli.Command{
@@ -54,24 +54,32 @@ func readGenesis(genesisPath string) *genesis.Genesis {
 
 func runCmd(ctx *cli.Context) error {
 	var (
-		tracer      evm.Tracer
-		debugLogger *evm.StructLogger
-		statedb     *state.StateDB
-		chainConfig *config.ChainConfig
-		sender      = common.BytesToAddress([]byte("sender"))
-		receiver    = common.BytesToAddress([]byte("receiver"))
-		blockNumber uint64
+		tracer        evm.Tracer
+		debugLogger   *evm.StructLogger
+		statedb       *state.StateDB
+		chainConfig   *config.ChainConfig
+		sender        = common.BytesToAddress([]byte("sender"))
+		receiver      = common.BytesToAddress([]byte("receiver"))
+		genesisConfig *core.Genesis
 	)
-
+	if ctx.GlobalBool(MachineFlag.Name) {
+		tracer = vm.NewJSONLogger(logconfig, os.Stdout)
+	} else if ctx.GlobalBool(DebugFlag.Name) {
+		debugLogger = vm.NewStructLogger(logconfig)
+		tracer = debugLogger
+	} else {
+		debugLogger = vm.NewStructLogger(logconfig)
+	}
 	if ctx.GlobalString(GenesisFlag.Name) != "" {
 		gen := readGenesis(ctx.GlobalString(GenesisFlag.Name))
-		db := database.NewMemDatabase()
+		genesisConfig = gen
+		db := mapper.NewMemoryDatabase()
 		genesisObj := gen.ToBlock(db)
 		statedb, _ = state.New(genesisObj.Root(), state.NewDatabase(db))
 		chainConfig = gen.Config
-		blockNumber = gen.Number
 	} else {
-		statedb, _ = state.New(common.Hash{}, state.NewDatabase(database.NewMemDatabase()))
+		statedb, _ = state.New(common.Hash{}, state.NewDatabase(mapper.NewMemoryDatabase()))
+		genesisConfig = new(core.Genesis)
 	}
 	if ctx.GlobalString(SenderFlag.Name) != "" {
 		sender = common.HexToAddress(ctx.GlobalString(SenderFlag.Name))
@@ -123,16 +131,23 @@ func runCmd(ctx *cli.Context) error {
 	}
 
 	initialGas := ctx.GlobalUint64(GasFlag.Name)
+	if genesisConfig.GasLimit != 0 {
+		initialGas = genesisConfig.GasLimit
+	}
 	runtimeConfig := runtime.Config{
 		Origin:      sender,
 		State:       statedb,
 		GasLimit:    initialGas,
 		GasPrice:    utils.GlobalBig(ctx, PriceFlag.Name),
 		Value:       utils.GlobalBig(ctx, ValueFlag.Name),
-		BlockNumber: new(big.Int).SetUint64(blockNumber),
-		EVMConfig: evm.Config{
-			Tracer: tracer,
-			Debug:  ctx.GlobalBool(DebugFlag.Name) || ctx.GlobalBool(MachineFlag.Name),
+		Difficulty:  genesisConfig.Difficulty,
+		Time:        new(big.Int).SetUint64(genesisConfig.Timestamp),
+		Coinbase:    genesisConfig.Coinbase,
+		BlockNumber: new(big.Int).SetUint64(genesisConfig.Number),
+		EVMConfig: vm.Config{
+			Tracer:         tracer,
+			Debug:          ctx.GlobalBool(DebugFlag.Name) || ctx.GlobalBool(MachineFlag.Name),
+			EVMInterpreter: ctx.GlobalString(EVMInterpreterFlag.Name),
 		},
 	}
 
@@ -166,6 +181,7 @@ func runCmd(ctx *cli.Context) error {
 	execTime := time.Since(tstart)
 
 	if ctx.GlobalBool(DumpFlag.Name) {
+		statedb.Commit(true)
 		statedb.IntermediateRoot(true)
 		fmt.Println(string(statedb.Dump()))
 	}

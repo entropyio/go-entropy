@@ -15,14 +15,16 @@ import (
 var log = logger.NewLogger("[entropy]")
 
 var (
-	app = utils.NewApp(utils.GitCommit, "the go-entropy command line interface")
+	gitCommit = ""
+	gitDate   = ""
+	app       = utils.NewApp(gitCommit, gitDate, "the go-entropy command line interface")
 )
 
 func init() {
-	log.Debug("do entropy init")
+	log.Debug("do entropy startup init")
 	app.Action = entropyAction
 	app.HideVersion = true // we have a command to print the version
-	app.Copyright = "Copyright 2018 The Entropy Authors"
+	app.Copyright = "Copyright 2019 The Entropy Authors"
 	app.Commands = []cli.Command{
 		// entropy init
 		subcmd.InitCommand,

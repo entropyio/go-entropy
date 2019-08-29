@@ -2,22 +2,22 @@ package model
 
 import (
 	"encoding/binary"
+	"fmt"
+	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/common/hexutil"
+	"github.com/entropyio/go-entropy/common/rlputil"
+	"golang.org/x/crypto/sha3"
 	"io"
 	"math/big"
+	"reflect"
 	"sort"
 	"sync/atomic"
 	"time"
-	"unsafe"
-
-	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/common/crypto/sha3"
-	"github.com/entropyio/go-entropy/common/hexutil"
-	"github.com/entropyio/go-entropy/common/rlputil"
 )
 
 var (
 	EmptyRootHash  = DeriveSha(Transactions{})
-	EmptyUncleHash = CalcUncleHash(nil)
+	EmptyUncleHash = rlpHash([]*Header(nil))
 )
 
 // A BlockNonce is a 64-bit hash which proves (combined with the
@@ -62,14 +62,14 @@ type Header struct {
 	Number      *big.Int       `json:"number"           gencodec:"required"`
 	GasLimit    uint64         `json:"gasLimit"         gencodec:"required"`
 	GasUsed     uint64         `json:"gasUsed"          gencodec:"required"`
-	Time        *big.Int       `json:"timestamp"        gencodec:"required"`
+	Time        uint64         `json:"timestamp"        gencodec:"required"`
 	Extra       []byte         `json:"extraData"        gencodec:"required"`
-	MixDigest   common.Hash    `json:"mixHash"          gencodec:"required"`
-	Nonce       BlockNonce     `json:"nonce"            gencodec:"required"`
+	MixDigest   common.Hash    `json:"mixHash"`
+	Nonce       BlockNonce     `json:"nonce"`
 
 	// for claude dpos
 	Validator     common.Address     `json:"validator" gencodec:"required"`
-	ClaudeCtxHash *ClaudeContextHash `json:"ctxHash"  	gencodec:"required"`
+	ClaudeCtxHash *ClaudeContextHash `json:"ctxHash"  gencodec:"required"`
 }
 
 // field type overrides for gencodec
@@ -78,7 +78,7 @@ type headerMarshaling struct {
 	Number     *hexutil.Big
 	GasLimit   hexutil.Uint64
 	GasUsed    hexutil.Uint64
-	Time       *hexutil.Big
+	Time       hexutil.Uint64
 	Extra      hexutil.Bytes
 	Hash       common.Hash `json:"hash"` // adds call to Hash() in MarshalJSON
 }
@@ -89,33 +89,35 @@ func (h *Header) Hash() common.Hash {
 	return rlpHash(h)
 }
 
-// HashNoNonce returns the hash which is used as input for the proof-of-work search.
-func (h *Header) HashNoNonce() common.Hash {
-	return rlpHash([]interface{}{
-		h.ParentHash,
-		h.UncleHash,
-		h.Coinbase,
-		h.Root,
-		h.TxHash,
-		h.ReceiptHash,
-		h.Bloom,
-		h.Difficulty,
-		h.Number,
-		h.GasLimit,
-		h.GasUsed,
-		h.Time,
-		h.Extra,
-	})
-}
+var headerSize = common.StorageSize(reflect.TypeOf(Header{}).Size())
 
 // Size returns the approximate memory used by all internal contents. It is used
 // to approximate and limit the memory consumption of various caches.
 func (h *Header) Size() common.StorageSize {
-	return common.StorageSize(unsafe.Sizeof(*h)) + common.StorageSize(len(h.Extra)+(h.Difficulty.BitLen()+h.Number.BitLen()+h.Time.BitLen())/8)
+	return headerSize + common.StorageSize(len(h.Extra)+(h.Difficulty.BitLen()+h.Number.BitLen())/8)
+}
+
+// SanityCheck checks a few basic things -- these checks are way beyond what
+// any 'sane' production values should hold, and can mainly be used to prevent
+// that the unbounded fields are stuffed with junk data to add processing
+// overhead
+func (h *Header) SanityCheck() error {
+	if h.Number != nil && !h.Number.IsUint64() {
+		return fmt.Errorf("too large block number: bitlen %d", h.Number.BitLen())
+	}
+	if h.Difficulty != nil {
+		if diffLen := h.Difficulty.BitLen(); diffLen > 80 {
+			return fmt.Errorf("too large block difficulty: bitlen %d", diffLen)
+		}
+	}
+	if eLen := len(h.Extra); eLen > 100*1024 {
+		return fmt.Errorf("too large block extradata: size %d", eLen)
+	}
+	return nil
 }
 
 func rlpHash(x interface{}) (h common.Hash) {
-	hw := sha3.NewKeccak256()
+	hw := sha3.NewLegacyKeccak256()
 	rlputil.Encode(hw, x)
 	hw.Sum(h[:0])
 	return h
@@ -229,9 +231,6 @@ func NewBlockWithHeader(header *Header) *Block {
 // modifying a header variable.
 func CopyHeader(h *Header) *Header {
 	cpy := *h
-	if cpy.Time = new(big.Int); h.Time != nil {
-		cpy.Time.Set(h.Time)
-	}
 	if cpy.Difficulty = new(big.Int); h.Difficulty != nil {
 		cpy.Difficulty.Set(h.Difficulty)
 	}
@@ -276,6 +275,8 @@ func (b *StorageBlock) DecodeRLP(s *rlputil.Stream) error {
 	return nil
 }
 
+// TODO: copies
+
 func (b *Block) Uncles() []*Header          { return b.uncles }
 func (b *Block) Transactions() Transactions { return b.transactions }
 
@@ -292,7 +293,7 @@ func (b *Block) Number() *big.Int     { return new(big.Int).Set(b.header.Number)
 func (b *Block) GasLimit() uint64     { return b.header.GasLimit }
 func (b *Block) GasUsed() uint64      { return b.header.GasUsed }
 func (b *Block) Difficulty() *big.Int { return new(big.Int).Set(b.header.Difficulty) }
-func (b *Block) Time() *big.Int       { return new(big.Int).Set(b.header.Time) }
+func (b *Block) Time() uint64         { return b.header.Time }
 
 func (b *Block) NumberU64() uint64        { return b.header.Number.Uint64() }
 func (b *Block) MixDigest() common.Hash   { return b.header.MixDigest }
@@ -314,10 +315,6 @@ func (b *Block) Header() *Header { return CopyHeader(b.header) }
 // Body returns the non-header content of the block.
 func (b *Block) Body() *Body { return &Body{b.transactions, b.uncles} }
 
-func (b *Block) HashNoNonce() common.Hash {
-	return b.header.HashNoNonce()
-}
-
 // Size returns the true RLP encoded storage size of the block, either by encoding
 // and returning it, or returning a previsouly cached value.
 func (b *Block) Size() common.StorageSize {
@@ -330,6 +327,12 @@ func (b *Block) Size() common.StorageSize {
 	return common.StorageSize(c)
 }
 
+// SanityCheck can be used to prevent that unbounded fields are
+// stuffed with junk data to add processing overhead
+func (b *Block) SanityCheck() error {
+	return b.header.SanityCheck()
+}
+
 type writeCounter common.StorageSize
 
 func (c *writeCounter) Write(b []byte) (int, error) {
@@ -338,6 +341,9 @@ func (c *writeCounter) Write(b []byte) (int, error) {
 }
 
 func CalcUncleHash(uncles []*Header) common.Hash {
+	if len(uncles) == 0 {
+		return EmptyUncleHash
+	}
 	return rlpHash(uncles)
 }
 

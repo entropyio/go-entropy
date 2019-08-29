@@ -62,11 +62,13 @@ func StartEntropyNode(ctx *cli.Context, stack *node.Node) {
 				status, _ := event.Wallet.Status()
 				log.Info("New wallet appeared", "url", event.Wallet.URL(), "status", status)
 
+				var derivationPaths []account.DerivationPath
 				if event.Wallet.URL().Scheme == "ledger" {
-					event.Wallet.SelfDerive(account.DefaultLedgerBaseDerivationPath, stateReader)
-				} else {
-					event.Wallet.SelfDerive(account.DefaultBaseDerivationPath, stateReader)
+					derivationPaths = append(derivationPaths, account.LegacyLedgerBaseDerivationPath)
 				}
+				derivationPaths = append(derivationPaths, account.DefaultBaseDerivationPath)
+
+				event.Wallet.SelfDerive(derivationPaths, stateReader)
 
 			case account.WalletDropped:
 				log.Info("Old wallet dropped", "url", event.Wallet.URL())
@@ -77,25 +79,25 @@ func StartEntropyNode(ctx *cli.Context, stack *node.Node) {
 	// Start auxiliary services if enabled
 	if ctx.GlobalBool(utils.MiningEnabledFlag.Name) || ctx.GlobalBool(utils.DeveloperFlag.Name) {
 		// Mining only makes sense if a full Ethereum node is running
-		if ctx.GlobalBool(utils.LightModeFlag.Name) || ctx.GlobalString(utils.SyncModeFlag.Name) == "light" {
+		if ctx.GlobalString(utils.SyncModeFlag.Name) == "light" {
 			utils.Fatalf("Light clients do not support mining")
 		}
 		var entropyObj *entropy.Entropy
 		if err := stack.Service(&entropyObj); err != nil {
 			utils.Fatalf("Entropy service not running: %v", err)
 		}
-		// Use a reduced number of threads if requested
-		if threads := ctx.GlobalInt(utils.MinerThreadsFlag.Name); threads > 0 {
-			type threaded interface {
-				SetThreads(threads int)
-			}
-			if th, ok := entropyObj.Engine().(threaded); ok {
-				th.SetThreads(threads)
-			}
-		}
 		// Set the gas price to the limits from the CLI and start mining
-		entropyObj.TxPool().SetGasPrice(utils.GlobalBig(ctx, utils.GasPriceFlag.Name))
-		if err := entropyObj.StartMining(true); err != nil {
+		gasprice := utils.GlobalBig(ctx, utils.MinerLegacyGasPriceFlag.Name)
+		if ctx.IsSet(utils.MinerGasPriceFlag.Name) {
+			gasprice = utils.GlobalBig(ctx, utils.MinerGasPriceFlag.Name)
+		}
+		entropyObj.TxPool().SetGasPrice(gasprice)
+
+		threads := ctx.GlobalInt(utils.MinerLegacyThreadsFlag.Name)
+		if ctx.GlobalIsSet(utils.MinerThreadsFlag.Name) {
+			threads = ctx.GlobalInt(utils.MinerThreadsFlag.Name)
+		}
+		if err := entropyObj.StartMining(threads); err != nil {
 			utils.Fatalf("Failed to start mining: %v", err)
 		}
 	}

@@ -14,7 +14,6 @@ import (
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
-	"github.com/entropyio/go-entropy/common/crypto/sha3"
 	"github.com/entropyio/go-entropy/common/rlputil"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus"
@@ -23,6 +22,7 @@ import (
 	"github.com/entropyio/go-entropy/logger"
 	"github.com/entropyio/go-entropy/rpc"
 	"github.com/hashicorp/golang-lru"
+	"golang.org/x/crypto/sha3"
 )
 
 const (
@@ -30,8 +30,8 @@ const (
 	extraSeal          = 65   // Fixed number of extra-data suffix bytes reserved for signer seal
 	inmemorySignatures = 4096 // Number of recent block signatures to keep in memory
 
-	blockInterval    = int64(10)
-	epochInterval    = int64(86400)
+	blockInterval    = uint64(10)
+	epochInterval    = uint64(86400)
 	maxValidatorSize = 21
 	safeSize         = maxValidatorSize*2/3 + 1
 	consensusSize    = maxValidatorSize*2/3 + 1
@@ -43,7 +43,7 @@ var (
 	frontierBlockReward  = big.NewInt(5e+18) // Block reward in wei for successfully mining a block
 	byzantiumBlockReward = big.NewInt(3e+18) // Block reward in wei for successfully mining a block upward from Byzantium
 
-	timeOfFirstBlock = int64(0)
+	timeOfFirstBlock = uint64(0)
 
 	confirmedBlockHead = []byte("confirmed-block-head")
 )
@@ -104,7 +104,7 @@ type SignerFn func(account.Account, []byte) ([]byte, error)
 // panics. This is done to avoid accidentally using both forms (signature present
 // or not), which could be abused to produce different hashes for the same header.
 func sigHash(header *model.Header) (hash common.Hash) {
-	hasher := sha3.NewKeccak256()
+	hasher := sha3.NewLegacyKeccak256()
 
 	rlputil.Encode(hasher, []interface{}{
 		header.ParentHash,
@@ -143,17 +143,42 @@ func (claude *Claude) Author(header *model.Header) (common.Address, error) {
 	return header.Validator, nil
 }
 
+// VerifyHeader checks whether a header conforms to the consensus rules.
 func (claude *Claude) VerifyHeader(chain consensus.ChainReader, header *model.Header, seal bool) error {
 	return claude.verifyHeader(chain, header, nil)
 }
 
+// VerifyHeaders is similar to VerifyHeader, but verifies a batch of headers. The
+// method returns a quit channel to abort the operations and a results channel to
+// retrieve the async verifications (the order is that of the input slice).
+func (claude *Claude) VerifyHeaders(chain consensus.ChainReader, headers []*model.Header, seals []bool) (chan<- struct{}, <-chan error) {
+	abort := make(chan struct{})
+	results := make(chan error, len(headers))
+
+	go func() {
+		for i, header := range headers {
+			err := claude.verifyHeader(chain, header, headers[:i])
+			select {
+			case <-abort:
+				return
+			case results <- err:
+			}
+		}
+	}()
+	return abort, results
+}
+
+// verifyHeader checks whether a header conforms to the consensus rules.The
+// caller may optionally pass in a batch of parents (ascending order) to avoid
+// looking those up from the database. This is useful for concurrently verifying
+// a batch of new headers.
 func (claude *Claude) verifyHeader(chain consensus.ChainReader, header *model.Header, parents []*model.Header) error {
 	if header.Number == nil {
 		return errUnknownBlock
 	}
 	number := header.Number.Uint64()
 	// Unnecssary to verify the block from feature
-	if header.Time.Cmp(big.NewInt(time.Now().Unix())) > 0 {
+	if header.Time > uint64(time.Now().Unix()) {
 		return consensus.ErrFutureBlock
 	}
 	// Check that the extra-data contains both the vanity and signature
@@ -185,27 +210,10 @@ func (claude *Claude) verifyHeader(chain consensus.ChainReader, header *model.He
 	if parent == nil || parent.Number.Uint64() != number-1 || parent.Hash() != header.ParentHash {
 		return consensus.ErrUnknownAncestor
 	}
-	if parent.Time.Uint64()+uint64(blockInterval) > header.Time.Uint64() {
+	if parent.Time+uint64(blockInterval) > header.Time {
 		return ErrInvalidTimestamp
 	}
 	return nil
-}
-
-func (claude *Claude) VerifyHeaders(chain consensus.ChainReader, headers []*model.Header, seals []bool) (chan<- struct{}, <-chan error) {
-	abort := make(chan struct{})
-	results := make(chan error, len(headers))
-
-	go func() {
-		for i, header := range headers {
-			err := claude.verifyHeader(chain, header, headers[:i])
-			select {
-			case <-abort:
-				return
-			case results <- err:
-			}
-		}
-	}()
-	return abort, results
 }
 
 // VerifyUncles implements consensus.Engine, always returning an error for any
@@ -223,6 +231,10 @@ func (claude *Claude) VerifySeal(chain consensus.ChainReader, header *model.Head
 	return claude.verifySeal(chain, header, nil)
 }
 
+// verifySeal checks whether the signature contained in the header satisfies the
+// consensus protocol requirements. The method accepts an optional list of parent
+// headers that aren't yet part of the local blockchain to generate the snapshots
+// from.
 func (claude *Claude) verifySeal(chain consensus.ChainReader, header *model.Header, parents []*model.Header) error {
 	// Verifying the genesis block is not supported
 	number := header.Number.Uint64()
@@ -241,7 +253,7 @@ func (claude *Claude) verifySeal(chain consensus.ChainReader, header *model.Head
 		return err
 	}
 	epochContext := &EpochContext{ClaudeContext: claudeContext}
-	validator, err := epochContext.lookupValidator(header.Time.Int64())
+	validator, err := epochContext.lookupValidator(header.Time)
 	if err != nil {
 		return err
 	}
@@ -282,7 +294,7 @@ func (claude *Claude) updateConfirmedBlockHeader(chain consensus.ChainReader) er
 	validatorMap := make(map[common.Address]bool)
 	for claude.confirmedBlockHeader.Hash() != curHeader.Hash() &&
 		claude.confirmedBlockHeader.Number.Uint64() < curHeader.Number.Uint64() {
-		curEpoch := curHeader.Time.Int64() / epochInterval
+		curEpoch := (int64)(curHeader.Time / epochInterval)
 		if curEpoch != epoch {
 			epoch = curEpoch
 			validatorMap = make(map[common.Address]bool)
@@ -340,7 +352,7 @@ func (claude *Claude) Prepare(chain consensus.ChainReader, header *model.Header)
 	if parent == nil {
 		return consensus.ErrUnknownAncestor
 	}
-	header.Difficulty = claude.CalcDifficulty(chain, header.Time.Uint64(), parent)
+	header.Difficulty = claude.CalcDifficulty(chain, header.Time, parent)
 	header.Validator = claude.signer
 	return nil
 }
@@ -358,7 +370,17 @@ func AccumulateRewards(config *config.ChainConfig, state *state.StateDB, header 
 	log.Debugf("AccumulateRewards address=%x, reward=%d, uncles=%v", uncles)
 }
 
-func (claude *Claude) Finalize(chain consensus.ChainReader, header *model.Header, state *state.StateDB, txs []*model.Transaction, uncles []*model.Header, receipts []*model.Receipt, claudeContext *model.ClaudeContext) (*model.Block, error) {
+// Finalize implements consensus.Engine, ensuring no uncles are set, nor block
+// rewards given.
+func (clique *Claude) Finalize(chain consensus.ChainReader, header *model.Header, state *state.StateDB, txs []*model.Transaction, uncles []*model.Header) {
+	// No block rewards in PoA, so the state remains as is and uncles are dropped
+	header.Root = state.IntermediateRoot(chain.Config().IsHomestead(header.Number))
+	header.UncleHash = model.CalcUncleHash(nil)
+}
+
+// FinalizeAndAssemble implements consensus.Engine, ensuring no uncles are set,
+// nor block rewards given, and returns the final block.
+func (claude *Claude) FinalizeAndAssemble(chain consensus.ChainReader, header *model.Header, state *state.StateDB, txs []*model.Transaction, uncles []*model.Header, receipts []*model.Receipt, claudeContext *model.ClaudeContext) (*model.Block, error) {
 	// Accumulate block rewards and commit the final state root
 	AccumulateRewards(chain.Config(), state, header, uncles)
 	header.Root = state.IntermediateRoot(chain.Config().IsHomestead(header.Number))
@@ -367,11 +389,11 @@ func (claude *Claude) Finalize(chain consensus.ChainReader, header *model.Header
 	epochContext := &EpochContext{
 		statedb:       state,
 		ClaudeContext: claudeContext,
-		TimeStamp:     header.Time.Int64(),
+		TimeStamp:     header.Time,
 	}
 	if timeOfFirstBlock == 0 {
 		if firstBlockHeader := chain.GetHeaderByNumber(1); firstBlockHeader != nil {
-			timeOfFirstBlock = firstBlockHeader.Time.Int64()
+			timeOfFirstBlock = firstBlockHeader.Time
 		}
 	}
 	genesis := chain.GetHeaderByNumber(0)
@@ -381,25 +403,25 @@ func (claude *Claude) Finalize(chain consensus.ChainReader, header *model.Header
 	}
 
 	//update mint count trie
-	updateMintCnt(parent.Time.Int64(), header.Time.Int64(), header.Validator, claudeContext)
+	updateMintCnt(parent.Time, header.Time, header.Validator, claudeContext)
 	header.ClaudeCtxHash = claudeContext.ToHash()
 	return model.NewBlock(header, txs, uncles, receipts), nil
 }
 
-func (claude *Claude) checkDeadline(lastBlock *model.Block, now int64) error {
+func (claude *Claude) checkDeadline(lastBlock *model.Block, now uint64) error {
 	prevSlot := PrevSlot(now)
 	nextSlot := NextSlot(now)
-	if lastBlock.Time().Int64() >= nextSlot {
+	if lastBlock.Time() >= nextSlot {
 		return ErrMintFutureBlock
 	}
 	// last block was arrived, or time's up
-	if lastBlock.Time().Int64() == prevSlot || nextSlot-now <= 1 {
+	if lastBlock.Time() == prevSlot || nextSlot-now <= 1 {
 		return nil
 	}
 	return ErrWaitForPrevBlock
 }
 
-func (claude *Claude) CheckValidator(lastBlock *model.Block, now int64) error {
+func (claude *Claude) CheckValidator(lastBlock *model.Block, now uint64) error {
 	if err := claude.checkDeadline(lastBlock, now); err != nil {
 		return err
 	}
@@ -422,35 +444,61 @@ func (claude *Claude) CheckValidator(lastBlock *model.Block, now int64) error {
 
 // Seal generates a new block for the given input block with the local miner's
 // seal place on top.
-func (claude *Claude) Seal(chain consensus.ChainReader, block *model.Block, stop <-chan struct{}) (*model.Block, error) {
+func (claude *Claude) Seal(chain consensus.ChainReader, block *model.Block, results chan<- *model.Block, stop <-chan struct{}) error {
 	header := block.Header()
 	number := header.Number.Uint64()
 	// Sealing the genesis block is not supported
 	if number == 0 {
-		return nil, errUnknownBlock
+		return errUnknownBlock
 	}
-	now := time.Now().Unix()
+	now := (uint64)(time.Now().Unix())
 	delay := NextSlot(now) - now
 	if delay > 0 {
 		select {
 		case <-stop:
-			return nil, nil
+			return nil
 		case <-time.After(time.Duration(delay) * time.Second):
 		}
 	}
-	block.Header().Time.SetInt64(time.Now().Unix())
+	block.Header().Time = (uint64)(time.Now().Unix())
 
 	// time's up, sign the block
 	sighash, err := claude.signFn(account.Account{Address: claude.signer}, sigHash(header).Bytes())
 	if err != nil {
-		return nil, err
+		return err
 	}
 	copy(header.Extra[len(header.Extra)-extraSeal:], sighash)
-	return block.WithSeal(header), nil
+	// Wait until sealing is terminated or delay timeout.
+	log.Debug("Waiting for slot to sign and propagate", "delay", common.PrettyDuration(delay))
+	go func() {
+		//select {
+		//case <-stop:
+		//	return
+		//case <-time.After(delay):
+		//}
+
+		select {
+		case results <- block.WithSeal(header):
+		default:
+			log.Debug("Sealing result is not read by miner", "sealhash", claude.SealHash(header))
+		}
+	}()
+
+	return nil
 }
 
 func (claude *Claude) CalcDifficulty(chain consensus.ChainReader, time uint64, parent *model.Header) *big.Int {
 	return big.NewInt(1)
+}
+
+// SealHash returns the hash of a block prior to it being sealed.
+func (claude *Claude) SealHash(header *model.Header) common.Hash {
+	return sigHash(header)
+}
+
+// Close implements consensus.Engine. It's a noop for clique as there are no background threads.
+func (claude *Claude) Close() error {
+	return nil
 }
 
 func (claude *Claude) APIs(chain consensus.ChainReader) []rpc.API {
@@ -467,11 +515,6 @@ func (claude *Claude) Authorize(signer common.Address, signFn SignerFn) {
 	claude.signer = signer
 	claude.signFn = signFn
 	claude.mu.Unlock()
-}
-
-// Close implements consensus.Engine. It's a noop for clique as there is are no background threads.
-func (claude *Claude) Close() error {
-	return nil
 }
 
 // ecrecover extracts the Entropy account address from a signed header.
@@ -497,16 +540,16 @@ func ecrecover(header *model.Header, sigcache *lru.ARCCache) (common.Address, er
 	return signer, nil
 }
 
-func PrevSlot(now int64) int64 {
-	return int64((now-1)/blockInterval) * blockInterval
+func PrevSlot(now uint64) uint64 {
+	return uint64((now-1)/blockInterval) * blockInterval
 }
 
-func NextSlot(now int64) int64 {
-	return int64((now+blockInterval-1)/blockInterval) * blockInterval
+func NextSlot(now uint64) uint64 {
+	return uint64((now+blockInterval-1)/blockInterval) * blockInterval
 }
 
 // update counts in MintCntTrie for the miner of newBlock
-func updateMintCnt(parentBlockTime, currentBlockTime int64, validator common.Address, claudeContext *model.ClaudeContext) {
+func updateMintCnt(parentBlockTime, currentBlockTime uint64, validator common.Address, claudeContext *model.ClaudeContext) {
 	currentMintCntTrie := claudeContext.MintCntTrie()
 	currentEpoch := parentBlockTime / epochInterval
 	currentEpochBytes := make([]byte, 8)

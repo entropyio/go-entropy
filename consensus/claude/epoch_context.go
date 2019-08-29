@@ -16,7 +16,7 @@ import (
 )
 
 type EpochContext struct {
-	TimeStamp     int64
+	TimeStamp     uint64
 	ClaudeContext *model.ClaudeContext
 	statedb       *state.StateDB
 }
@@ -60,7 +60,7 @@ func (ec *EpochContext) countVotes() (votes map[common.Address]*big.Int, err err
 	return votes, nil
 }
 
-func (ec *EpochContext) kickoutValidator(epoch int64) error {
+func (ec *EpochContext) kickoutValidator(epoch uint64) error {
 	validators, err := ec.ClaudeContext.GetValidators()
 	if err != nil {
 		return fmt.Errorf("failed to get validator: %s", err)
@@ -83,13 +83,13 @@ func (ec *EpochContext) kickoutValidator(epoch int64) error {
 		key := make([]byte, 8)
 		binary.BigEndian.PutUint64(key, uint64(epoch))
 		key = append(key, validator.Bytes()...)
-		cnt := int64(0)
+		cnt := uint64(0)
 		if cntBytes := ec.ClaudeContext.MintCntTrie().Get(key); cntBytes != nil {
-			cnt = int64(binary.BigEndian.Uint64(cntBytes))
+			cnt = uint64(binary.BigEndian.Uint64(cntBytes))
 		}
 		if cnt < epochDuration/blockInterval/maxValidatorSize/2 {
 			// not active validators need kickout
-			needKickoutValidators = append(needKickoutValidators, &sortableAddress{validator, big.NewInt(cnt)})
+			needKickoutValidators = append(needKickoutValidators, &sortableAddress{validator, big.NewInt((int64)(cnt))})
 		}
 	}
 	// no validators need kickout
@@ -125,7 +125,7 @@ func (ec *EpochContext) kickoutValidator(epoch int64) error {
 	return nil
 }
 
-func (ec *EpochContext) lookupValidator(now int64) (validator common.Address, err error) {
+func (ec *EpochContext) lookupValidator(now uint64) (validator common.Address, err error) {
 	validator = common.Address{}
 	offset := now % epochInterval
 	if offset%blockInterval != 0 {
@@ -141,13 +141,13 @@ func (ec *EpochContext) lookupValidator(now int64) (validator common.Address, er
 	if validatorSize == 0 {
 		return common.Address{}, errors.New("failed to lookup validator")
 	}
-	offset %= int64(validatorSize)
+	offset %= uint64(validatorSize)
 	return validators[offset], nil
 }
 
 func (ec *EpochContext) tryElect(genesis, parent *model.Header) error {
-	genesisEpoch := genesis.Time.Int64() / epochInterval
-	prevEpoch := parent.Time.Int64() / epochInterval
+	genesisEpoch := genesis.Time / epochInterval
+	prevEpoch := parent.Time / epochInterval
 	currentEpoch := ec.TimeStamp / epochInterval
 
 	prevEpochIsGenesis := prevEpoch == genesisEpoch
@@ -182,8 +182,8 @@ func (ec *EpochContext) tryElect(genesis, parent *model.Header) error {
 		}
 
 		// shuffle candidates
-		seed := int64(binary.LittleEndian.Uint32(crypto.Keccak512(parent.Hash().Bytes()))) + i
-		r := rand.New(rand.NewSource(seed))
+		seed := uint64(binary.LittleEndian.Uint32(crypto.Keccak512(parent.Hash().Bytes()))) + i
+		r := rand.New(rand.NewSource((int64)(seed)))
 		for i := len(candidates) - 1; i > 0; i-- {
 			j := int(r.Int31n(int32(i + 1)))
 			candidates[i], candidates[j] = candidates[j], candidates[i]

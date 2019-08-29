@@ -173,19 +173,19 @@ func (tx *rpcTransaction) UnmarshalJSON(msg []byte) error {
 
 // TransactionByHash returns the transaction with the given hash.
 func (ec *Client) TransactionByHash(ctx context.Context, hash common.Hash) (tx *model.Transaction, isPending bool, err error) {
-	var action *rpcTransaction
-	err = ec.c.CallContext(ctx, &action, "entropy_getTransactionByHash", hash)
+	var json *rpcTransaction
+	err = ec.c.CallContext(ctx, &json, "entropy_getTransactionByHash", hash)
 	if err != nil {
 		return nil, false, err
-	} else if action == nil {
+	} else if json == nil {
 		return nil, false, entropy.NotFound
-	} else if _, r, _ := action.tx.RawSignatureValues(); r == nil {
+	} else if _, r, _ := json.tx.RawSignatureValues(); r == nil {
 		return nil, false, fmt.Errorf("server returned transaction without signature")
 	}
-	if action.From != nil && action.BlockHash != nil {
-		setSenderFromServer(action.tx, *action.From, *action.BlockHash)
+	if json.From != nil && json.BlockHash != nil {
+		setSenderFromServer(json.tx, *json.From, *json.BlockHash)
 	}
-	return action.tx, action.BlockNumber == nil, nil
+	return json.tx, json.BlockNumber == nil, nil
 }
 
 // TransactionSender returns the sender address of the given transaction. The transaction
@@ -222,19 +222,19 @@ func (ec *Client) TransactionCount(ctx context.Context, blockHash common.Hash) (
 
 // TransactionInBlock returns a single transaction at index in the given block.
 func (ec *Client) TransactionInBlock(ctx context.Context, blockHash common.Hash, index uint) (*model.Transaction, error) {
-	var action *rpcTransaction
-	err := ec.c.CallContext(ctx, &action, "entropy_getTransactionByBlockHashAndIndex", blockHash, hexutil.Uint64(index))
+	var json *rpcTransaction
+	err := ec.c.CallContext(ctx, &json, "entropy_getTransactionByBlockHashAndIndex", blockHash, hexutil.Uint64(index))
 	if err == nil {
-		if action == nil {
+		if json == nil {
 			return nil, entropy.NotFound
-		} else if _, r, _ := action.tx.RawSignatureValues(); r == nil {
+		} else if _, r, _ := json.tx.RawSignatureValues(); r == nil {
 			return nil, fmt.Errorf("server returned transaction without signature")
 		}
 	}
-	if action.From != nil && action.BlockHash != nil {
-		setSenderFromServer(action.tx, *action.From, *action.BlockHash)
+	if json.From != nil && json.BlockHash != nil {
+		setSenderFromServer(json.tx, *json.From, *json.BlockHash)
 	}
-	return action.tx, err
+	return json.tx, err
 }
 
 // TransactionReceipt returns the receipt of a transaction by transaction hash.
@@ -348,26 +348,42 @@ func (ec *Client) NonceAt(ctx context.Context, account common.Address, blockNumb
 // FilterLogs executes a filter query.
 func (ec *Client) FilterLogs(ctx context.Context, q entropy.FilterQuery) ([]model.Log, error) {
 	var result []model.Log
-	err := ec.c.CallContext(ctx, &result, "entropy_getLogs", toFilterArg(q))
+	arg, err := toFilterArg(q)
+	if err != nil {
+		return nil, err
+	}
+	err = ec.c.CallContext(ctx, &result, "entropy_getLogs", arg)
 	return result, err
 }
 
 // SubscribeFilterLogs subscribes to the results of a streaming filter query.
 func (ec *Client) SubscribeFilterLogs(ctx context.Context, q entropy.FilterQuery, ch chan<- model.Log) (entropy.Subscription, error) {
-	return ec.c.EthSubscribe(ctx, ch, "logs", toFilterArg(q))
+	arg, err := toFilterArg(q)
+	if err != nil {
+		return nil, err
+	}
+	return ec.c.EthSubscribe(ctx, ch, "logs", arg)
 }
 
-func toFilterArg(q entropy.FilterQuery) interface{} {
+func toFilterArg(q entropy.FilterQuery) (interface{}, error) {
 	arg := map[string]interface{}{
-		"fromBlock": toBlockNumArg(q.FromBlock),
-		"toBlock":   toBlockNumArg(q.ToBlock),
-		"address":   q.Addresses,
-		"topics":    q.Topics,
+		"address": q.Addresses,
+		"topics":  q.Topics,
 	}
-	if q.FromBlock == nil {
-		arg["fromBlock"] = "0x0"
+	if q.BlockHash != nil {
+		arg["blockHash"] = *q.BlockHash
+		if q.FromBlock != nil || q.ToBlock != nil {
+			return nil, fmt.Errorf("cannot specify both BlockHash and FromBlock/ToBlock")
+		}
+	} else {
+		if q.FromBlock == nil {
+			arg["fromBlock"] = "0x0"
+		} else {
+			arg["fromBlock"] = toBlockNumArg(q.FromBlock)
+		}
+		arg["toBlock"] = toBlockNumArg(q.ToBlock)
 	}
-	return arg
+	return arg, nil
 }
 
 // Pending State
@@ -407,6 +423,8 @@ func (ec *Client) PendingTransactionCount(ctx context.Context) (uint, error) {
 	err := ec.c.CallContext(ctx, &num, "entropy_getBlockTransactionCountByNumber", "pending")
 	return uint(num), err
 }
+
+// TODO: SubscribePendingTransactions (needs server side)
 
 // Contract Calling
 

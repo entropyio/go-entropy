@@ -22,6 +22,7 @@ func (err DuplicateMetric) Error() string {
 // This is an interface so as to encourage other structs to implement
 // the Registry API as appropriate.
 type Registry interface {
+
 	// Call the given function for each registered metric.
 	Each(func(string, interface{}))
 
@@ -310,7 +311,11 @@ func (r *PrefixedRegistry) UnregisterAll() {
 	r.underlying.UnregisterAll()
 }
 
-var DefaultRegistry Registry = NewRegistry()
+var (
+	DefaultRegistry    = NewRegistry()
+	EphemeralRegistry  = NewRegistry()
+	AccountingRegistry = NewRegistry() // registry used in swarm
+)
 
 // Call the given function for each registered metric.
 func Each(f func(string, interface{})) {

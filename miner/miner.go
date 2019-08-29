@@ -8,11 +8,14 @@ import (
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/common/hexutil"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus"
 	"github.com/entropyio/go-entropy/entropy/downloader"
 	"github.com/entropyio/go-entropy/event"
 	"github.com/entropyio/go-entropy/logger"
+	"math/big"
+	"time"
 )
 
 var log = logger.NewLogger("[miner]")
@@ -23,6 +26,18 @@ type Backend interface {
 	TxPool() *blockchain.TxPool
 }
 
+// Config is the configuration parameters of mining.
+type Config struct {
+	EntropyBase common.Address `toml:",omitempty"` // Public address for block mining rewards (default = first account)
+	Notify      []string       `toml:",omitempty"` // HTTP URL list to be notified of new work packages(only useful in ethash).
+	ExtraData   hexutil.Bytes  `toml:",omitempty"` // Block extra data set by the miner
+	GasFloor    uint64         // Target gas floor for mined blocks.
+	GasCeil     uint64         // Target gas ceiling for mined blocks.
+	GasPrice    *big.Int       // Minimum gas price for mining a transaction
+	Recommit    time.Duration  // The time interval for miner to re-create mining work.
+	Noverify    bool           // Disable remote mining solution verification(only useful in ethash).
+}
+
 // Miner creates blocks and searches for proof-of-work values.
 type Miner struct {
 	mux *event.TypeMux
@@ -30,7 +45,7 @@ type Miner struct {
 	worker *worker
 
 	coinbase common.Address
-	entropy      Backend
+	eth      Backend
 	engine   consensus.Engine
 	exitCh   chan struct{}
 
@@ -38,13 +53,13 @@ type Miner struct {
 	shouldStart int32 // should start indicates whether we should start after sync
 }
 
-func New(entropy Backend, config *config.ChainConfig, mux *event.TypeMux, engine consensus.Engine) *Miner {
+func New(eth Backend, config *Config, chainConfig *config.ChainConfig, mux *event.TypeMux, engine consensus.Engine, isLocalBlock func(block *model.Block) bool) *Miner {
 	miner := &Miner{
-		entropy:      entropy,
+		eth:      eth,
 		mux:      mux,
 		engine:   engine,
 		exitCh:   make(chan struct{}),
-		worker:   newWorker(config, engine, entropy, mux),
+		worker:   newWorker(config, chainConfig, engine, eth, mux, isLocalBlock),
 		canStart: 1,
 	}
 	go miner.update()
@@ -104,7 +119,7 @@ func (miner *Miner) Start(coinbase common.Address) {
 }
 
 func (miner *Miner) Stop() {
-	log.Warningf("miner stop: 0x%x", miner.coinbase)
+	log.Warningf("miner stop at: 0x%x", miner.coinbase)
 	miner.worker.stop()
 	atomic.StoreInt32(&miner.shouldStart, 0)
 }
@@ -127,10 +142,15 @@ func (miner *Miner) HashRate() uint64 {
 
 func (miner *Miner) SetExtra(extra []byte) error {
 	if uint64(len(extra)) > config.MaximumExtraDataSize {
-		return fmt.Errorf("extra exceeds max length. %d > %v", len(extra), config.MaximumExtraDataSize)
+		return fmt.Errorf("Extra exceeds max length. %d > %v", len(extra), config.MaximumExtraDataSize)
 	}
 	miner.worker.setExtra(extra)
 	return nil
+}
+
+// SetRecommitInterval sets the interval for sealing work resubmitting.
+func (self *Miner) SetRecommitInterval(interval time.Duration) {
+	self.worker.setRecommitInterval(interval)
 }
 
 // Pending returns the currently pending block and associated state.

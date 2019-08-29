@@ -1,12 +1,19 @@
 package entropy
 
 import (
+	"fmt"
+	"github.com/entropyio/go-entropy/blockchain"
+	"github.com/entropyio/go-entropy/blockchain/genesis"
+	"github.com/entropyio/go-entropy/blockchain/mapper"
+	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
+	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus/ethash"
 	"github.com/entropyio/go-entropy/entropy/downloader"
 	"github.com/entropyio/go-entropy/event"
+	"github.com/entropyio/go-entropy/evm"
 	"github.com/entropyio/go-entropy/server/p2p"
 	"math"
 	"math/big"
@@ -14,35 +21,6 @@ import (
 	"testing"
 	"time"
 )
-
-// Tests that protocol versions and modes of operations are matched up properly.
-func TestProtocolCompatibility(t *testing.T) {
-	// Define the compatibility chart
-	tests := []struct {
-		version    uint
-		mode       downloader.SyncMode
-		compatible bool
-	}{
-		{61, downloader.FullSync, true}, {62, downloader.FullSync, true}, {63, downloader.FullSync, true},
-		{61, downloader.FastSync, false}, {62, downloader.FastSync, false}, {63, downloader.FastSync, true},
-	}
-	// Make sure anything we screw up is restored
-	backup := ProtocolVersions
-	defer func() { ProtocolVersions = backup }()
-
-	// Try all available compatibility configs and check for errors
-	for i, tt := range tests {
-		ProtocolVersions = []uint{tt.version}
-
-		pm, _, err := newTestProtocolManager(tt.mode, 0, nil, nil)
-		if pm != nil {
-			defer pm.Stop()
-		}
-		if (err == nil && !tt.compatible) || (err != nil && tt.compatible) {
-			t.Errorf("test %d: compatibility mismatch: have error %v, want compatibility %v", i, err, tt.compatible)
-		}
-	}
-}
 
 // Tests that block headers can be retrieved from a remote chain based on user queries.
 func TestGetBlockHeaders62(t *testing.T) { testGetBlockHeaders(t, 62) }
@@ -66,106 +44,106 @@ func testGetBlockHeaders(t *testing.T, protocol int) {
 	}{
 		// A single random block should be retrievable by hash and number too
 		{
-			&getBlockHeadersData{Origin: hashOrNumber{Hash: pm.blockchain.GetBlockByNumber(limit / 2).Hash()}, Amount: 1},
-			[]common.Hash{pm.blockchain.GetBlockByNumber(limit / 2).Hash()},
+			&getBlockHeadersData{Origin: hashOrNumber{Hash: pm.blockChain.GetBlockByNumber(limit / 2).Hash()}, Amount: 1},
+			[]common.Hash{pm.blockChain.GetBlockByNumber(limit / 2).Hash()},
 		}, {
 			&getBlockHeadersData{Origin: hashOrNumber{Number: limit / 2}, Amount: 1},
-			[]common.Hash{pm.blockchain.GetBlockByNumber(limit / 2).Hash()},
+			[]common.Hash{pm.blockChain.GetBlockByNumber(limit / 2).Hash()},
 		},
 		// Multiple headers should be retrievable in both directions
 		{
 			&getBlockHeadersData{Origin: hashOrNumber{Number: limit / 2}, Amount: 3},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(limit / 2).Hash(),
-				pm.blockchain.GetBlockByNumber(limit/2 + 1).Hash(),
-				pm.blockchain.GetBlockByNumber(limit/2 + 2).Hash(),
+				pm.blockChain.GetBlockByNumber(limit / 2).Hash(),
+				pm.blockChain.GetBlockByNumber(limit/2 + 1).Hash(),
+				pm.blockChain.GetBlockByNumber(limit/2 + 2).Hash(),
 			},
 		}, {
 			&getBlockHeadersData{Origin: hashOrNumber{Number: limit / 2}, Amount: 3, Reverse: true},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(limit / 2).Hash(),
-				pm.blockchain.GetBlockByNumber(limit/2 - 1).Hash(),
-				pm.blockchain.GetBlockByNumber(limit/2 - 2).Hash(),
+				pm.blockChain.GetBlockByNumber(limit / 2).Hash(),
+				pm.blockChain.GetBlockByNumber(limit/2 - 1).Hash(),
+				pm.blockChain.GetBlockByNumber(limit/2 - 2).Hash(),
 			},
 		},
 		// Multiple headers with skip lists should be retrievable
 		{
 			&getBlockHeadersData{Origin: hashOrNumber{Number: limit / 2}, Skip: 3, Amount: 3},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(limit / 2).Hash(),
-				pm.blockchain.GetBlockByNumber(limit/2 + 4).Hash(),
-				pm.blockchain.GetBlockByNumber(limit/2 + 8).Hash(),
+				pm.blockChain.GetBlockByNumber(limit / 2).Hash(),
+				pm.blockChain.GetBlockByNumber(limit/2 + 4).Hash(),
+				pm.blockChain.GetBlockByNumber(limit/2 + 8).Hash(),
 			},
 		}, {
 			&getBlockHeadersData{Origin: hashOrNumber{Number: limit / 2}, Skip: 3, Amount: 3, Reverse: true},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(limit / 2).Hash(),
-				pm.blockchain.GetBlockByNumber(limit/2 - 4).Hash(),
-				pm.blockchain.GetBlockByNumber(limit/2 - 8).Hash(),
+				pm.blockChain.GetBlockByNumber(limit / 2).Hash(),
+				pm.blockChain.GetBlockByNumber(limit/2 - 4).Hash(),
+				pm.blockChain.GetBlockByNumber(limit/2 - 8).Hash(),
 			},
 		},
 		// The chain endpoints should be retrievable
 		{
 			&getBlockHeadersData{Origin: hashOrNumber{Number: 0}, Amount: 1},
-			[]common.Hash{pm.blockchain.GetBlockByNumber(0).Hash()},
+			[]common.Hash{pm.blockChain.GetBlockByNumber(0).Hash()},
 		}, {
-			&getBlockHeadersData{Origin: hashOrNumber{Number: pm.blockchain.CurrentBlock().NumberU64()}, Amount: 1},
-			[]common.Hash{pm.blockchain.CurrentBlock().Hash()},
+			&getBlockHeadersData{Origin: hashOrNumber{Number: pm.blockChain.CurrentBlock().NumberU64()}, Amount: 1},
+			[]common.Hash{pm.blockChain.CurrentBlock().Hash()},
 		},
 		// Ensure protocol limits are honored
 		{
-			&getBlockHeadersData{Origin: hashOrNumber{Number: pm.blockchain.CurrentBlock().NumberU64() - 1}, Amount: limit + 10, Reverse: true},
-			pm.blockchain.GetBlockHashesFromHash(pm.blockchain.CurrentBlock().Hash(), limit),
+			&getBlockHeadersData{Origin: hashOrNumber{Number: pm.blockChain.CurrentBlock().NumberU64() - 1}, Amount: limit + 10, Reverse: true},
+			pm.blockChain.GetBlockHashesFromHash(pm.blockChain.CurrentBlock().Hash(), limit),
 		},
 		// Check that requesting more than available is handled gracefully
 		{
-			&getBlockHeadersData{Origin: hashOrNumber{Number: pm.blockchain.CurrentBlock().NumberU64() - 4}, Skip: 3, Amount: 3},
+			&getBlockHeadersData{Origin: hashOrNumber{Number: pm.blockChain.CurrentBlock().NumberU64() - 4}, Skip: 3, Amount: 3},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(pm.blockchain.CurrentBlock().NumberU64() - 4).Hash(),
-				pm.blockchain.GetBlockByNumber(pm.blockchain.CurrentBlock().NumberU64()).Hash(),
+				pm.blockChain.GetBlockByNumber(pm.blockChain.CurrentBlock().NumberU64() - 4).Hash(),
+				pm.blockChain.GetBlockByNumber(pm.blockChain.CurrentBlock().NumberU64()).Hash(),
 			},
 		}, {
 			&getBlockHeadersData{Origin: hashOrNumber{Number: 4}, Skip: 3, Amount: 3, Reverse: true},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(4).Hash(),
-				pm.blockchain.GetBlockByNumber(0).Hash(),
+				pm.blockChain.GetBlockByNumber(4).Hash(),
+				pm.blockChain.GetBlockByNumber(0).Hash(),
 			},
 		},
 		// Check that requesting more than available is handled gracefully, even if mid skip
 		{
-			&getBlockHeadersData{Origin: hashOrNumber{Number: pm.blockchain.CurrentBlock().NumberU64() - 4}, Skip: 2, Amount: 3},
+			&getBlockHeadersData{Origin: hashOrNumber{Number: pm.blockChain.CurrentBlock().NumberU64() - 4}, Skip: 2, Amount: 3},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(pm.blockchain.CurrentBlock().NumberU64() - 4).Hash(),
-				pm.blockchain.GetBlockByNumber(pm.blockchain.CurrentBlock().NumberU64() - 1).Hash(),
+				pm.blockChain.GetBlockByNumber(pm.blockChain.CurrentBlock().NumberU64() - 4).Hash(),
+				pm.blockChain.GetBlockByNumber(pm.blockChain.CurrentBlock().NumberU64() - 1).Hash(),
 			},
 		}, {
 			&getBlockHeadersData{Origin: hashOrNumber{Number: 4}, Skip: 2, Amount: 3, Reverse: true},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(4).Hash(),
-				pm.blockchain.GetBlockByNumber(1).Hash(),
+				pm.blockChain.GetBlockByNumber(4).Hash(),
+				pm.blockChain.GetBlockByNumber(1).Hash(),
 			},
 		},
 		// Check a corner case where requesting more can iterate past the endpoints
 		{
 			&getBlockHeadersData{Origin: hashOrNumber{Number: 2}, Amount: 5, Reverse: true},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(2).Hash(),
-				pm.blockchain.GetBlockByNumber(1).Hash(),
-				pm.blockchain.GetBlockByNumber(0).Hash(),
+				pm.blockChain.GetBlockByNumber(2).Hash(),
+				pm.blockChain.GetBlockByNumber(1).Hash(),
+				pm.blockChain.GetBlockByNumber(0).Hash(),
 			},
 		},
 		// Check a corner case where skipping overflow loops back into the chain start
 		{
-			&getBlockHeadersData{Origin: hashOrNumber{Hash: pm.blockchain.GetBlockByNumber(3).Hash()}, Amount: 2, Reverse: false, Skip: math.MaxUint64 - 1},
+			&getBlockHeadersData{Origin: hashOrNumber{Hash: pm.blockChain.GetBlockByNumber(3).Hash()}, Amount: 2, Reverse: false, Skip: math.MaxUint64 - 1},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(3).Hash(),
+				pm.blockChain.GetBlockByNumber(3).Hash(),
 			},
 		},
 		// Check a corner case where skipping overflow loops back to the same header
 		{
-			&getBlockHeadersData{Origin: hashOrNumber{Hash: pm.blockchain.GetBlockByNumber(1).Hash()}, Amount: 2, Reverse: false, Skip: math.MaxUint64},
+			&getBlockHeadersData{Origin: hashOrNumber{Hash: pm.blockChain.GetBlockByNumber(1).Hash()}, Amount: 2, Reverse: false, Skip: math.MaxUint64},
 			[]common.Hash{
-				pm.blockchain.GetBlockByNumber(1).Hash(),
+				pm.blockChain.GetBlockByNumber(1).Hash(),
 			},
 		},
 		// Check that non existing headers aren't returned
@@ -173,16 +151,16 @@ func testGetBlockHeaders(t *testing.T, protocol int) {
 			&getBlockHeadersData{Origin: hashOrNumber{Hash: unknown}, Amount: 1},
 			[]common.Hash{},
 		}, {
-			&getBlockHeadersData{Origin: hashOrNumber{Number: pm.blockchain.CurrentBlock().NumberU64() + 1}, Amount: 1},
+			&getBlockHeadersData{Origin: hashOrNumber{Number: pm.blockChain.CurrentBlock().NumberU64() + 1}, Amount: 1},
 			[]common.Hash{},
 		},
 	}
 	// Run each of the tests and verify the results against the chain
 	for i, tt := range tests {
 		// Collect the headers to expect in the response
-		headers := []*types.Header{}
+		headers := []*model.Header{}
 		for _, hash := range tt.expect {
-			headers = append(headers, pm.blockchain.GetBlockByHash(hash).Header())
+			headers = append(headers, pm.blockChain.GetBlockByHash(hash).Header())
 		}
 		// Send the hash request and verify the response
 		p2p.Send(peer.app, 0x03, tt.query)
@@ -191,7 +169,7 @@ func testGetBlockHeaders(t *testing.T, protocol int) {
 		}
 		// If the test used number origins, repeat with hashes as the too
 		if tt.query.Origin.Hash == (common.Hash{}) {
-			if origin := pm.blockchain.GetBlockByNumber(tt.query.Origin.Number); origin != nil {
+			if origin := pm.blockChain.GetBlockByNumber(tt.query.Origin.Number); origin != nil {
 				tt.query.Origin.Hash, tt.query.Origin.Number = origin.Hash(), 0
 
 				p2p.Send(peer.app, 0x03, tt.query)
@@ -220,22 +198,22 @@ func testGetBlockBodies(t *testing.T, protocol int) {
 		available []bool        // Availability of explicitly requested blocks
 		expected  int           // Total number of existing blocks to expect
 	}{
-		{1, nil, nil, 1},                                                         // A single random block should be retrievable
-		{10, nil, nil, 10},                                                       // Multiple random blocks should be retrievable
-		{limit, nil, nil, limit},                                                 // The maximum possible blocks should be retrievable
-		{limit + 1, nil, nil, limit},                                             // No more than the possible block count should be returned
-		{0, []common.Hash{pm.blockchain.Genesis().Hash()}, []bool{true}, 1},      // The genesis block should be retrievable
-		{0, []common.Hash{pm.blockchain.CurrentBlock().Hash()}, []bool{true}, 1}, // The chains head block should be retrievable
+		{1, nil, nil, 1},             // A single random block should be retrievable
+		{10, nil, nil, 10},           // Multiple random blocks should be retrievable
+		{limit, nil, nil, limit},     // The maximum possible blocks should be retrievable
+		{limit + 1, nil, nil, limit}, // No more than the possible block count should be returned
+		{0, []common.Hash{pm.blockChain.Genesis().Hash()}, []bool{true}, 1},      // The genesis block should be retrievable
+		{0, []common.Hash{pm.blockChain.CurrentBlock().Hash()}, []bool{true}, 1}, // The chains head block should be retrievable
 		{0, []common.Hash{{}}, []bool{false}, 0},                                 // A non existent block should not be returned
 
 		// Existing and non-existing blocks interleaved should not cause problems
 		{0, []common.Hash{
 			{},
-			pm.blockchain.GetBlockByNumber(1).Hash(),
+			pm.blockChain.GetBlockByNumber(1).Hash(),
 			{},
-			pm.blockchain.GetBlockByNumber(10).Hash(),
+			pm.blockChain.GetBlockByNumber(10).Hash(),
 			{},
-			pm.blockchain.GetBlockByNumber(100).Hash(),
+			pm.blockChain.GetBlockByNumber(100).Hash(),
 			{},
 		}, []bool{false, true, false, true, false, true, false}, 3},
 	}
@@ -247,11 +225,11 @@ func testGetBlockBodies(t *testing.T, protocol int) {
 
 		for j := 0; j < tt.random; j++ {
 			for {
-				num := rand.Int63n(int64(pm.blockchain.CurrentBlock().NumberU64()))
+				num := rand.Int63n(int64(pm.blockChain.CurrentBlock().NumberU64()))
 				if !seen[num] {
 					seen[num] = true
 
-					block := pm.blockchain.GetBlockByNumber(uint64(num))
+					block := pm.blockChain.GetBlockByNumber(uint64(num))
 					hashes = append(hashes, block.Hash())
 					if len(bodies) < tt.expected {
 						bodies = append(bodies, &blockBody{Transactions: block.Transactions(), Uncles: block.Uncles()})
@@ -263,7 +241,7 @@ func testGetBlockBodies(t *testing.T, protocol int) {
 		for j, hash := range tt.explicit {
 			hashes = append(hashes, hash)
 			if tt.available[j] && len(bodies) < tt.expected {
-				block := pm.blockchain.GetBlockByHash(hash)
+				block := pm.blockChain.GetBlockByHash(hash)
 				bodies = append(bodies, &blockBody{Transactions: block.Transactions(), Uncles: block.Uncles()})
 			}
 		}
@@ -285,19 +263,19 @@ func testGetNodeData(t *testing.T, protocol int) {
 	acc1Addr := crypto.PubkeyToAddress(acc1Key.PublicKey)
 	acc2Addr := crypto.PubkeyToAddress(acc2Key.PublicKey)
 
-	signer := types.HomesteadSigner{}
+	signer := model.HomesteadSigner{}
 	// Create a chain generator with some simple transactions (blatantly stolen from @fjl/chain_markets_test)
-	generator := func(i int, block *core.BlockGen) {
+	generator := func(i int, block *blockchain.BlockGen) {
 		switch i {
 		case 0:
 			// In block 1, the test bank sends account #1 some ether.
-			tx, _ := types.SignTx(types.NewTransaction(block.TxNonce(testBank), acc1Addr, big.NewInt(10000), params.TxGas, nil, nil), signer, testBankKey)
+			tx, _ := model.SignTx(model.NewTransaction(block.TxNonce(testBank), acc1Addr, big.NewInt(10000), config.TxGas, nil, nil), signer, testBankKey)
 			block.AddTx(tx)
 		case 1:
 			// In block 2, the test bank sends some more ether to account #1.
 			// acc1Addr passes it on to account #2.
-			tx1, _ := types.SignTx(types.NewTransaction(block.TxNonce(testBank), acc1Addr, big.NewInt(1000), params.TxGas, nil, nil), signer, testBankKey)
-			tx2, _ := types.SignTx(types.NewTransaction(block.TxNonce(acc1Addr), acc2Addr, big.NewInt(1000), params.TxGas, nil, nil), signer, acc1Key)
+			tx1, _ := model.SignTx(model.NewTransaction(block.TxNonce(testBank), acc1Addr, big.NewInt(1000), config.TxGas, nil, nil), signer, testBankKey)
+			tx2, _ := model.SignTx(model.NewTransaction(block.TxNonce(acc1Addr), acc2Addr, big.NewInt(1000), config.TxGas, nil, nil), signer, acc1Key)
 			block.AddTx(tx1)
 			block.AddTx(tx2)
 		case 2:
@@ -321,11 +299,15 @@ func testGetNodeData(t *testing.T, protocol int) {
 
 	// Fetch for now the entire chain db
 	hashes := []common.Hash{}
-	for _, key := range db.Keys() {
-		if len(key) == len(common.Hash{}) {
+
+	it := db.NewIterator()
+	for it.Next() {
+		if key := it.Key(); len(key) == common.HashLength {
 			hashes = append(hashes, common.BytesToHash(key))
 		}
 	}
+	it.Release()
+
 	p2p.Send(peer.app, 0x0d, hashes)
 	msg, err := peer.app.ReadMsg()
 	if err != nil {
@@ -344,16 +326,16 @@ func testGetNodeData(t *testing.T, protocol int) {
 			t.Errorf("data hash mismatch: have %x, want %x", hash, want)
 		}
 	}
-	statedb := ethdb.NewMemDatabase()
+	statedb := mapper.NewMemoryDatabase()
 	for i := 0; i < len(data); i++ {
 		statedb.Put(hashes[i].Bytes(), data[i])
 	}
 	accounts := []common.Address{testBank, acc1Addr, acc2Addr}
-	for i := uint64(0); i <= pm.blockchain.CurrentBlock().NumberU64(); i++ {
-		trie, _ := state.New(pm.blockchain.GetBlockByNumber(i).Root(), state.NewDatabase(statedb))
+	for i := uint64(0); i <= pm.blockChain.CurrentBlock().NumberU64(); i++ {
+		trie, _ := state.New(pm.blockChain.GetBlockByNumber(i).Root(), state.NewDatabase(statedb))
 
 		for j, acc := range accounts {
-			state, _ := pm.blockchain.State()
+			state, _ := pm.blockChain.State()
 			bw := state.GetBalance(acc)
 			bh := trie.GetBalance(acc)
 
@@ -377,19 +359,19 @@ func testGetReceipt(t *testing.T, protocol int) {
 	acc1Addr := crypto.PubkeyToAddress(acc1Key.PublicKey)
 	acc2Addr := crypto.PubkeyToAddress(acc2Key.PublicKey)
 
-	signer := types.HomesteadSigner{}
+	signer := model.HomesteadSigner{}
 	// Create a chain generator with some simple transactions (blatantly stolen from @fjl/chain_markets_test)
-	generator := func(i int, block *core.BlockGen) {
+	generator := func(i int, block *blockchain.BlockGen) {
 		switch i {
 		case 0:
 			// In block 1, the test bank sends account #1 some ether.
-			tx, _ := types.SignTx(types.NewTransaction(block.TxNonce(testBank), acc1Addr, big.NewInt(10000), params.TxGas, nil, nil), signer, testBankKey)
+			tx, _ := model.SignTx(model.NewTransaction(block.TxNonce(testBank), acc1Addr, big.NewInt(10000), config.TxGas, nil, nil), signer, testBankKey)
 			block.AddTx(tx)
 		case 1:
 			// In block 2, the test bank sends some more ether to account #1.
 			// acc1Addr passes it on to account #2.
-			tx1, _ := types.SignTx(types.NewTransaction(block.TxNonce(testBank), acc1Addr, big.NewInt(1000), params.TxGas, nil, nil), signer, testBankKey)
-			tx2, _ := types.SignTx(types.NewTransaction(block.TxNonce(acc1Addr), acc2Addr, big.NewInt(1000), params.TxGas, nil, nil), signer, acc1Key)
+			tx1, _ := model.SignTx(model.NewTransaction(block.TxNonce(testBank), acc1Addr, big.NewInt(1000), config.TxGas, nil, nil), signer, testBankKey)
+			tx2, _ := model.SignTx(model.NewTransaction(block.TxNonce(acc1Addr), acc2Addr, big.NewInt(1000), config.TxGas, nil, nil), signer, acc1Key)
 			block.AddTx(tx1)
 			block.AddTx(tx2)
 		case 2:
@@ -412,12 +394,12 @@ func testGetReceipt(t *testing.T, protocol int) {
 	defer peer.close()
 
 	// Collect the hashes to request, and the response to expect
-	hashes, receipts := []common.Hash{}, []types.Receipts{}
-	for i := uint64(0); i <= pm.blockchain.CurrentBlock().NumberU64(); i++ {
-		block := pm.blockchain.GetBlockByNumber(i)
+	hashes, receipts := []common.Hash{}, []model.Receipts{}
+	for i := uint64(0); i <= pm.blockChain.CurrentBlock().NumberU64(); i++ {
+		block := pm.blockChain.GetBlockByNumber(i)
 
 		hashes = append(hashes, block.Hash())
-		receipts = append(receipts, pm.blockchain.GetReceiptsByHash(block.Hash()))
+		receipts = append(receipts, pm.blockChain.GetReceiptsByHash(block.Hash()))
 	}
 	// Send the hash request and verify the response
 	p2p.Send(peer.app, 0x0f, hashes)
@@ -426,75 +408,211 @@ func testGetReceipt(t *testing.T, protocol int) {
 	}
 }
 
-// Tests that post entropy protocol handshake, DAO fork-enabled clients also execute
-// a DAO "challenge" verifying each others' DAO fork headers to ensure they're on
-// compatible chains.
-func TestDAOChallengeNoVsNo(t *testing.T)       { testDAOChallenge(t, false, false, false) }
-func TestDAOChallengeNoVsPro(t *testing.T)      { testDAOChallenge(t, false, true, false) }
-func TestDAOChallengeProVsNo(t *testing.T)      { testDAOChallenge(t, true, false, false) }
-func TestDAOChallengeProVsPro(t *testing.T)     { testDAOChallenge(t, true, true, false) }
-func TestDAOChallengeNoVsTimeout(t *testing.T)  { testDAOChallenge(t, false, false, true) }
-func TestDAOChallengeProVsTimeout(t *testing.T) { testDAOChallenge(t, true, true, true) }
+// Tests that post eth protocol handshake, clients perform a mutual checkpoint
+// challenge to validate each other's chains. Hash mismatches, or missing ones
+// during a fast sync should lead to the peer getting dropped.
+func TestCheckpointChallenge(t *testing.T) {
+	tests := []struct {
+		syncmode   downloader.SyncMode
+		checkpoint bool
+		timeout    bool
+		empty      bool
+		match      bool
+		drop       bool
+	}{
+		// If checkpointing is not enabled locally, don't challenge and don't drop
+		{downloader.FullSync, false, false, false, false, false},
+		{downloader.FastSync, false, false, false, false, false},
 
-func testDAOChallenge(t *testing.T, localForked, remoteForked bool, timeout bool) {
-	// Reduce the DAO handshake challenge timeout
-	if timeout {
-		defer func(old time.Duration) { daoChallengeTimeout = old }(daoChallengeTimeout)
-		daoChallengeTimeout = 500 * time.Millisecond
+		// If checkpointing is enabled locally and remote response is empty, only drop during fast sync
+		{downloader.FullSync, true, false, true, false, false},
+		{downloader.FastSync, true, false, true, false, true}, // Special case, fast sync, unsynced peer
+
+		// If checkpointing is enabled locally and remote response mismatches, always drop
+		{downloader.FullSync, true, false, false, false, true},
+		{downloader.FastSync, true, false, false, false, true},
+
+		// If checkpointing is enabled locally and remote response matches, never drop
+		{downloader.FullSync, true, false, false, true, false},
+		{downloader.FastSync, true, false, false, true, false},
+
+		// If checkpointing is enabled locally and remote times out, always drop
+		{downloader.FullSync, true, true, false, true, true},
+		{downloader.FastSync, true, true, false, true, true},
 	}
-	// Create a DAO aware protocol manager
+	for _, tt := range tests {
+		t.Run(fmt.Sprintf("sync %v checkpoint %v timeout %v empty %v match %v", tt.syncmode, tt.checkpoint, tt.timeout, tt.empty, tt.match), func(t *testing.T) {
+			testCheckpointChallenge(t, tt.syncmode, tt.checkpoint, tt.timeout, tt.empty, tt.match, tt.drop)
+		})
+	}
+}
+
+func testCheckpointChallenge(t *testing.T, syncmode downloader.SyncMode, checkpoint bool, timeout bool, empty bool, match bool, drop bool) {
+	// Reduce the checkpoint handshake challenge timeout
+	defer func(old time.Duration) { syncChallengeTimeout = old }(syncChallengeTimeout)
+	syncChallengeTimeout = 250 * time.Millisecond
+
+	// Initialize a chain and generate a fake CHT if checkpointing is enabled
 	var (
-		evmux         = new(event.TypeMux)
-		pow           = ethash.NewFaker()
-		db            = ethdb.NewMemDatabase()
-		config        = &params.ChainConfig{DAOForkBlock: big.NewInt(1), DAOForkSupport: localForked}
-		gspec         = &core.Genesis{Config: config}
-		genesis       = gspec.MustCommit(db)
-		blockchain, _ = core.NewBlockChain(db, nil, config, pow, vm.Config{})
+		db        = mapper.NewMemoryDatabase()
+		configObj = new(config.ChainConfig)
 	)
-	pm, err := NewProtocolManager(config, downloader.FullSync, DefaultConfig.NetworkId, evmux, new(testTxPool), pow, blockchain, db)
+	(&genesis.Genesis{Config: configObj}).MustCommit(db) // Commit genesis block
+	// If checkpointing is enabled, create and inject a fake CHT and the corresponding
+	// chllenge response.
+	var response *model.Header
+	var cht *config.TrustedCheckpoint
+	if checkpoint {
+		index := uint64(rand.Intn(500))
+		number := (index+1)*config.CHTFrequency - 1
+		response = &model.Header{Number: big.NewInt(int64(number)), Extra: []byte("valid")}
+
+		cht = &config.TrustedCheckpoint{
+			SectionIndex: index,
+			SectionHead:  response.Hash(),
+		}
+	}
+	// Create a checkpoint aware protocol manager
+	blockchainObj, err := blockchain.NewBlockChain(db, nil, configObj, ethash.NewFaker(), evm.Config{}, nil)
+	if err != nil {
+		t.Fatalf("failed to create new blockchain: %v", err)
+	}
+	pm, err := NewProtocolManager(configObj, cht, syncmode, DefaultConfig.NetworkId, new(event.TypeMux), new(testTxPool), ethash.NewFaker(), blockchainObj, db, 1, nil)
 	if err != nil {
 		t.Fatalf("failed to start test protocol manager: %v", err)
 	}
 	pm.Start(1000)
 	defer pm.Stop()
 
-	// Connect a new peer and check that we receive the DAO challenge
-	peer, _ := newTestPeer("peer", eth63, pm, true)
+	// Connect a new peer and check that we receive the checkpoint challenge
+	peer, _ := newTestPeer("peer", entropy63, pm, true)
 	defer peer.close()
 
-	challenge := &getBlockHeadersData{
-		Origin:  hashOrNumber{Number: config.DAOForkBlock.Uint64()},
-		Amount:  1,
-		Skip:    0,
-		Reverse: false,
-	}
-	if err := p2p.ExpectMsg(peer.app, GetBlockHeadersMsg, challenge); err != nil {
-		t.Fatalf("challenge mismatch: %v", err)
-	}
-	// Create a block to reply to the challenge if no timeout is simulated
-	if !timeout {
-		blocks, _ := core.GenerateChain(&params.ChainConfig{}, genesis, ethash.NewFaker(), db, 1, func(i int, block *core.BlockGen) {
-			if remoteForked {
-				block.SetExtra(params.DAOForkBlockExtra)
+	if checkpoint {
+		challenge := &getBlockHeadersData{
+			Origin:  hashOrNumber{Number: response.Number.Uint64()},
+			Amount:  1,
+			Skip:    0,
+			Reverse: false,
+		}
+		if err := p2p.ExpectMsg(peer.app, GetBlockHeadersMsg, challenge); err != nil {
+			t.Fatalf("challenge mismatch: %v", err)
+		}
+		// Create a block to reply to the challenge if no timeout is simulated
+		if !timeout {
+			if empty {
+				if err := p2p.Send(peer.app, BlockHeadersMsg, []*model.Header{}); err != nil {
+					t.Fatalf("failed to answer challenge: %v", err)
+				}
+			} else if match {
+				if err := p2p.Send(peer.app, BlockHeadersMsg, []*model.Header{response}); err != nil {
+					t.Fatalf("failed to answer challenge: %v", err)
+				}
+			} else {
+				if err := p2p.Send(peer.app, BlockHeadersMsg, []*model.Header{{Number: response.Number}}); err != nil {
+					t.Fatalf("failed to answer challenge: %v", err)
+				}
 			}
-		})
-		if err := p2p.Send(peer.app, BlockHeadersMsg, []*types.Header{blocks[0].Header()}); err != nil {
-			t.Fatalf("failed to answer challenge: %v", err)
 		}
-		time.Sleep(100 * time.Millisecond) // Sleep to avoid the verification racing with the drops
-	} else {
-		// Otherwise wait until the test timeout passes
-		time.Sleep(daoChallengeTimeout + 500*time.Millisecond)
 	}
-	// Verify that depending on fork side, the remote peer is maintained or dropped
-	if localForked == remoteForked && !timeout {
-		if peers := pm.peers.Len(); peers != 1 {
-			t.Fatalf("peer count mismatch: have %d, want %d", peers, 1)
-		}
-	} else {
+	// Wait until the test timeout passes to ensure proper cleanup
+	time.Sleep(syncChallengeTimeout + 100*time.Millisecond)
+
+	// Verify that the remote peer is maintained or dropped
+	if drop {
 		if peers := pm.peers.Len(); peers != 0 {
 			t.Fatalf("peer count mismatch: have %d, want %d", peers, 0)
 		}
+	} else {
+		if peers := pm.peers.Len(); peers != 1 {
+			t.Fatalf("peer count mismatch: have %d, want %d", peers, 1)
+		}
+	}
+}
+
+func TestBroadcastBlock(t *testing.T) {
+	var tests = []struct {
+		totalPeers        int
+		broadcastExpected int
+	}{
+		{1, 1},
+		{2, 2},
+		{3, 3},
+		{4, 4},
+		{5, 4},
+		{9, 4},
+		{12, 4},
+		{16, 4},
+		{26, 5},
+		{100, 10},
+	}
+	for _, test := range tests {
+		testBroadcastBlock(t, test.totalPeers, test.broadcastExpected)
+	}
+}
+
+func testBroadcastBlock(t *testing.T, totalPeers, broadcastExpected int) {
+	var (
+		evmux      = new(event.TypeMux)
+		pow        = ethash.NewFaker()
+		db         = mapper.NewMemoryDatabase()
+		configObj  = &config.ChainConfig{}
+		gspec      = &genesis.Genesis{Config: configObj}
+		genesisObj = gspec.MustCommit(db)
+	)
+	blockchainObj, err := blockchain.NewBlockChain(db, nil, configObj, pow, evm.Config{}, nil)
+	if err != nil {
+		t.Fatalf("failed to create new blockchain: %v", err)
+	}
+	pm, err := NewProtocolManager(configObj, nil, downloader.FullSync, DefaultConfig.NetworkId, evmux, new(testTxPool), pow, blockchainObj, db, 1, nil)
+	if err != nil {
+		t.Fatalf("failed to start test protocol manager: %v", err)
+	}
+	pm.Start(1000)
+	defer pm.Stop()
+	var peers []*testPeer
+	for i := 0; i < totalPeers; i++ {
+		peer, _ := newTestPeer(fmt.Sprintf("peer %d", i), entropy63, pm, true)
+		defer peer.close()
+		peers = append(peers, peer)
+	}
+	chain, _ := blockchain.GenerateChain(gspec.Config, genesisObj, ethash.NewFaker(), db, 1, func(i int, gen *blockchain.BlockGen) {})
+	pm.BroadcastBlock(chain[0], true /*propagate*/)
+
+	errCh := make(chan error, totalPeers)
+	doneCh := make(chan struct{}, totalPeers)
+	for _, peer := range peers {
+		go func(p *testPeer) {
+			if err := p2p.ExpectMsg(p.app, NewBlockMsg, &newBlockData{Block: chain[0], TD: big.NewInt(131136)}); err != nil {
+				errCh <- err
+			} else {
+				doneCh <- struct{}{}
+			}
+		}(peer)
+	}
+	timeout := time.After(300 * time.Millisecond)
+	var receivedCount int
+outer:
+	for {
+		select {
+		case err = <-errCh:
+			break outer
+		case <-doneCh:
+			receivedCount++
+			if receivedCount == totalPeers {
+				break outer
+			}
+		case <-timeout:
+			break outer
+		}
+	}
+	for _, peer := range peers {
+		peer.app.Close()
+	}
+	if err != nil {
+		t.Errorf("error matching block by peer: %v", err)
+	}
+	if receivedCount != broadcastExpected {
+		t.Errorf("block broadcast to %d peers, expected %d", receivedCount, broadcastExpected)
 	}
 }

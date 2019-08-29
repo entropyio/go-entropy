@@ -77,13 +77,13 @@ func (db *Dashboard) handleLogRequest(r *LogsRequest, c *client) {
 		// The last file is continuously updated, and its chunks are streamed,
 		// so in order to avoid log record duplication on the client side, it is
 		// handled differently. Its actual content is always saved in the history.
-		db.lock.Lock()
+		db.logLock.RLock()
 		if db.history.Logs != nil {
 			c.msg <- &Message{
-				Logs: db.history.Logs,
+				Logs: deepcopy.Copy(db.history.Logs).(*LogsMessage),
 			}
 		}
-		db.lock.Unlock()
+		db.logLock.RUnlock()
 		return
 	case fileNames[idx] == r.Name:
 		idx++
@@ -249,7 +249,7 @@ loop:
 
 			var l *LogsMessage
 			// Update the history.
-			db.lock.Lock()
+			db.logLock.Lock()
 			if bytes.Equal(db.history.Logs.Chunk, emptyChunk) {
 				db.history.Logs.Chunk = chunk
 				l = deepcopy.Copy(db.history.Logs).(*LogsMessage)
@@ -261,7 +261,7 @@ loop:
 				db.history.Logs.Chunk = b
 				l = &LogsMessage{Chunk: chunk}
 			}
-			db.lock.Unlock()
+			db.logLock.Unlock()
 
 			db.sendToAll(&Message{Logs: l})
 		case errc = <-db.quit:

@@ -7,3 +7,4 @@ package genesis
 const mainnetAllocData = ""
 const testnetAllocData = ""
 const rinkebyAllocData = ""
+const goerliAllocData = ""

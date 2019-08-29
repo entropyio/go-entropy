@@ -14,7 +14,7 @@ import (
 	"strings"
 )
 
-// ----- DirectoryString -----
+// ----- DirectoryString start -----
 type DirectoryString struct {
 	Value string
 }
@@ -30,9 +30,48 @@ func (ds *DirectoryString) Set(value string) error {
 	return nil
 }
 
-// ------ DirectoryString ------
+// ------ DirectoryString end ------
 
-// ------- textMarshalerVal ---------
+// --------- DirectoryFlag start -----
+type DirectoryFlag struct {
+	Name  string
+	Value DirectoryString
+	Usage string
+}
+
+// implement cli.Flag
+func (flag DirectoryFlag) String() string {
+	fmtString := "%s %v\t%v"
+	if len(flag.Value.Value) > 0 {
+		fmtString = "%s \"%v\"\t%v"
+	}
+	return fmt.Sprintf(fmtString, prefixedNames(flag.Name), flag.Value.Value, flag.Usage)
+}
+
+func eachName(longName string, fn func(string)) {
+	parts := strings.Split(longName, ",")
+	for _, name := range parts {
+		name = strings.Trim(name, " ")
+		fn(name)
+	}
+}
+
+// called by cli library, grabs variable from environment (if in env)
+// and adds variable to flag set for parsing.
+func (flag DirectoryFlag) Apply(set *flag.FlagSet) {
+	eachName(flag.Name, func(name string) {
+		set.Var(&flag.Value, flag.Name, flag.Usage)
+	})
+}
+
+// --------- DirectoryFlag end ------
+
+// ----- TextMarshaler start --------
+type TextMarshaler interface {
+	encoding.TextMarshaler
+	encoding.TextUnmarshaler
+}
+
 // textMarshalerVal turns a TextMarshaler into a flag.Value
 type textMarshalerVal struct {
 	v TextMarshaler
@@ -48,14 +87,6 @@ func (v textMarshalerVal) String() string {
 
 func (v textMarshalerVal) Set(s string) error {
 	return v.v.UnmarshalText([]byte(s))
-}
-
-// ------- textMarshalerVal ---------
-
-// ----- TextMarshaler --------
-type TextMarshaler interface {
-	encoding.TextMarshaler
-	encoding.TextUnmarshaler
 }
 
 // TextMarshalerFlag wraps a TextMarshaler value.
@@ -79,7 +110,24 @@ func (f TextMarshalerFlag) Apply(set *flag.FlagSet) {
 	})
 }
 
-// ----- TextMarshaler --------
+// ----- TextMarshaler end --------
+
+// GlobalTextMarshaler returns the value of a TextMarshalerFlag from the global flag set.
+func GlobalTextMarshaler(ctx *cli.Context, name string) TextMarshaler {
+	val := ctx.GlobalGeneric(name)
+	if val == nil {
+		return nil
+	}
+	return val.(textMarshalerVal).v
+}
+
+// BigFlag is a command line flag that accepts 256 bit big integers in decimal or
+// hexadecimal syntax.
+type BigFlag struct {
+	Name  string
+	Value *big.Int
+	Usage string
+}
 
 // bigValue turns *big.Int into a flag.Value
 type bigValue big.Int
@@ -100,21 +148,22 @@ func (b *bigValue) Set(s string) error {
 	return nil
 }
 
-// GlobalTextMarshaler returns the value of a TextMarshalerFlag from the global flag set.
-func GlobalTextMarshaler(ctx *cli.Context, name string) TextMarshaler {
-	val := ctx.GlobalGeneric(name)
-	if val == nil {
-		return nil
-	}
-	return val.(textMarshalerVal).v
+func (f BigFlag) GetName() string {
+	return f.Name
 }
 
-// BigFlag is a command line flag that accepts 256 bit big integers in decimal or
-// hexadecimal syntax.
-type BigFlag struct {
-	Name  string
-	Value *big.Int
-	Usage string
+func (f BigFlag) String() string {
+	fmtString := "%s %v\t%v"
+	if f.Value != nil {
+		fmtString = "%s \"%v\"\t%v"
+	}
+	return fmt.Sprintf(fmtString, prefixedNames(f.Name), f.Value, f.Usage)
+}
+
+func (f BigFlag) Apply(set *flag.FlagSet) {
+	eachName(f.Name, func(name string) {
+		set.Var((*bigValue)(f.Value), f.Name, f.Usage)
+	})
 }
 
 // GlobalBig returns the value of a BigFlag from the global flag set.
@@ -124,6 +173,36 @@ func GlobalBig(ctx *cli.Context, name string) *big.Int {
 		return nil
 	}
 	return (*big.Int)(val.(*bigValue))
+}
+
+func prefixFor(name string) (prefix string) {
+	if len(name) == 1 {
+		prefix = "-"
+	} else {
+		prefix = "--"
+	}
+
+	return
+}
+
+func prefixedNames(fullName string) (prefixed string) {
+	parts := strings.Split(fullName, ",")
+	for i, name := range parts {
+		name = strings.Trim(name, " ")
+		prefixed += prefixFor(name) + name
+		if i < len(parts)-1 {
+			prefixed += ", "
+		}
+	}
+	return
+}
+
+func (self DirectoryFlag) GetName() string {
+	return self.Name
+}
+
+func (self *DirectoryFlag) Set(value string) {
+	self.Value.Value = value
 }
 
 // Expands a file path
@@ -149,70 +228,3 @@ func homeDir() string {
 	}
 	return ""
 }
-
-// ---------
-
-type DirectoryFlag struct {
-	Name  string
-	Value DirectoryString
-	Usage string
-}
-
-// implement cli.Flag
-func (flag DirectoryFlag) String() string {
-	fmtString := "%s %v\t%v"
-	if len(flag.Value.Value) > 0 {
-		fmtString = "%s \"%v\"\t%v"
-	}
-	return fmt.Sprintf(fmtString, prefixedNames(flag.Name), flag.Value.Value, flag.Usage)
-}
-
-// implement cli.Flag
-func (flag DirectoryFlag) GetName() string {
-	return flag.Name
-}
-
-// implement cli.Flag
-func (flag *DirectoryFlag) Set(value string) {
-	flag.Value.Value = value
-}
-
-// called by cli library, grabs variable from environment (if in env)
-// and adds variable to flag set for parsing.
-func (flag DirectoryFlag) Apply(set *flag.FlagSet) {
-	eachName(flag.Name, func(name string) {
-		set.Var(&flag.Value, flag.Name, flag.Usage)
-	})
-}
-
-func eachName(longName string, fn func(string)) {
-	parts := strings.Split(longName, ",")
-	for _, name := range parts {
-		name = strings.Trim(name, " ")
-		fn(name)
-	}
-}
-
-func prefixedNames(fullName string) (prefixed string) {
-	parts := strings.Split(fullName, ",")
-	for i, name := range parts {
-		name = strings.Trim(name, " ")
-		prefixed += prefixFor(name) + name
-		if i < len(parts)-1 {
-			prefixed += ", "
-		}
-	}
-	return
-}
-
-func prefixFor(name string) (prefix string) {
-	if len(name) == 1 {
-		prefix = "-"
-	} else {
-		prefix = "--"
-	}
-
-	return
-}
-
-// --------

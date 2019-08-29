@@ -13,6 +13,7 @@ const FANOUT = 128
 // Stop the compiler from complaining during debugging.
 var (
 	_ = ioutil.Discard
+	//_ = log.LstdFlags
 )
 
 func BenchmarkMetrics(b *testing.B) {

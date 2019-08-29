@@ -250,7 +250,7 @@ func (s DistinctNetSet) Len() int {
 
 // key encodes the map key for an address into a temporary buffer.
 //
-// The first byte of key is '4' or '6' to distinguish IPv4/IPv6 address model.
+// The first byte of key is '4' or '6' to distinguish IPv4/IPv6 address types.
 // The remainder of the key is the IP, truncated to the number of bits.
 func (s *DistinctNetSet) key(ip net.IP) net.IP {
 	// Lazily initialize storage.

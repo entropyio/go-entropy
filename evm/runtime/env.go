@@ -1,9 +1,9 @@
 package runtime
 
 import (
+	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/evm"
-	"github.com/entropyio/go-entropy/blockchain"
 )
 
 func NewEnv(cfg *Config) *evm.EVM {

@@ -87,6 +87,91 @@ func (b *bridge) OpenWallet(call otto.FunctionCall) (response otto.Value) {
 		return val
 	}
 
+	// Wallet open failed, report error unless it's a PIN or PUK entry
+	switch {
+	//case strings.HasSuffix(err.Error(), usbwallet.ErrTrezorPINNeeded.Error()):
+	//	val, err = b.readPinAndReopenWallet(call)
+	//	if err == nil {
+	//		return val
+	//	}
+	//	val, err = b.readPassphraseAndReopenWallet(call)
+	//	if err != nil {
+	//		throwJSException(err.Error())
+	//	}
+	//
+	//case strings.HasSuffix(err.Error(), scwallet.ErrPairingPasswordNeeded.Error()):
+	//	// PUK input requested, fetch from the user and call open again
+	//	if input, err := b.prompter.PromptPassword("Please enter the pairing password: "); err != nil {
+	//		throwJSException(err.Error())
+	//	} else {
+	//		passwd, _ = otto.ToValue(input)
+	//	}
+	//	if val, err = call.Otto.Call("jeth.openWallet", nil, wallet, passwd); err != nil {
+	//		if !strings.HasSuffix(err.Error(), scwallet.ErrPINNeeded.Error()) {
+	//			throwJSException(err.Error())
+	//		} else {
+	//			// PIN input requested, fetch from the user and call open again
+	//			if input, err := b.prompter.PromptPassword("Please enter current PIN: "); err != nil {
+	//				throwJSException(err.Error())
+	//			} else {
+	//				passwd, _ = otto.ToValue(input)
+	//			}
+	//			if val, err = call.Otto.Call("jeth.openWallet", nil, wallet, passwd); err != nil {
+	//				throwJSException(err.Error())
+	//			}
+	//		}
+	//	}
+	//
+	//case strings.HasSuffix(err.Error(), scwallet.ErrPINUnblockNeeded.Error()):
+	//	// PIN unblock requested, fetch PUK and new PIN from the user
+	//	var pukpin string
+	//	if input, err := b.prompter.PromptPassword("Please enter current PUK: "); err != nil {
+	//		throwJSException(err.Error())
+	//	} else {
+	//		pukpin = input
+	//	}
+	//	if input, err := b.prompter.PromptPassword("Please enter new PIN: "); err != nil {
+	//		throwJSException(err.Error())
+	//	} else {
+	//		pukpin += input
+	//	}
+	//	passwd, _ = otto.ToValue(pukpin)
+	//	if val, err = call.Otto.Call("jeth.openWallet", nil, wallet, passwd); err != nil {
+	//		throwJSException(err.Error())
+	//	}
+	//
+	//case strings.HasSuffix(err.Error(), scwallet.ErrPINNeeded.Error()):
+	//	// PIN input requested, fetch from the user and call open again
+	//	if input, err := b.prompter.PromptPassword("Please enter current PIN: "); err != nil {
+	//		throwJSException(err.Error())
+	//	} else {
+	//		passwd, _ = otto.ToValue(input)
+	//	}
+	//	if val, err = call.Otto.Call("jeth.openWallet", nil, wallet, passwd); err != nil {
+	//		throwJSException(err.Error())
+	//	}
+
+	default:
+		// Unknown error occurred, drop to the user
+		throwJSException(err.Error())
+	}
+	return val
+}
+
+func (b *bridge) readPassphraseAndReopenWallet(call otto.FunctionCall) (otto.Value, error) {
+	var passwd otto.Value
+	wallet := call.Argument(0)
+	if input, err := b.prompter.PromptPassword("Please enter your passphrase: "); err != nil {
+		throwJSException(err.Error())
+	} else {
+		passwd, _ = otto.ToValue(input)
+	}
+	return call.Otto.Call("jeth.openWallet", nil, wallet, passwd)
+}
+
+func (b *bridge) readPinAndReopenWallet(call otto.FunctionCall) (otto.Value, error) {
+	var passwd otto.Value
+	wallet := call.Argument(0)
 	// Trezor PIN matrix input requested, display the matrix to the user and fetch the data
 	fmt.Fprintf(b.printer, "Look at the device for number positions\n\n")
 	fmt.Fprintf(b.printer, "7 | 8 | 9\n")
@@ -100,10 +185,7 @@ func (b *bridge) OpenWallet(call otto.FunctionCall) (response otto.Value) {
 	} else {
 		passwd, _ = otto.ToValue(input)
 	}
-	if val, err = call.Otto.Call("jEntropy.openWallet", nil, wallet, passwd); err != nil {
-		throwJSException(err.Error())
-	}
-	return val
+	return call.Otto.Call("jeth.openWallet", nil, wallet, passwd)
 }
 
 // UnlockAccount is a wrapper around the personal.unlockAccount RPC method that
@@ -223,7 +305,7 @@ func (b *bridge) SleepBlocks(call otto.FunctionCall) (response otto.Value) {
 			throwJSException("expected number as second argument")
 		}
 	}
-	// go through the console, this will allow entropy3 to call the appropriate
+	// go through the console, this will allow web3 to call the appropriate
 	// callbacks if a delayed response or notification is received.
 	blockNumber := func() int64 {
 		result, err := call.Otto.Run("entropy.blockNumber()")
@@ -255,7 +337,7 @@ type jsonrpcCall struct {
 	Params []interface{}
 }
 
-// Send implements the entropy3 provider "send" method.
+// Send implements the web3 provider "send" method.
 func (b *bridge) Send(call otto.FunctionCall) (response otto.Value) {
 	// Remarshal the request into a Go value.
 	JSON, _ := call.Otto.Object("JSON")

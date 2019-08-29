@@ -13,7 +13,7 @@ import (
 	"github.com/entropyio/go-entropy/rpc"
 )
 
-var maxPrice = big.NewInt(500 * config.Shannon)
+var maxPrice = big.NewInt(500 * config.GWei)
 
 type Config struct {
 	Blocks     int

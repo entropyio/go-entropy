@@ -22,7 +22,13 @@ func importPreSaleKey(keyStore keyStore, keyJSON []byte, password string) (accou
 		return account.Account{}, nil, err
 	}
 	key.Id = uuid.NewRandom()
-	a := account.Account{Address: key.Address, URL: account.URL{Scheme: KeyStoreScheme, Path: keyStore.JoinPath(keyFileName(key.Address))}}
+	a := account.Account{
+		Address: key.Address,
+		URL: account.URL{
+			Scheme: KeyStoreScheme,
+			Path:   keyStore.JoinPath(keyFileName(key.Address)),
+		},
+	}
 	err = keyStore.StoreKey(a.URL.Path, key, password)
 	return a, key, err
 }

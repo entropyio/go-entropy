@@ -8,12 +8,13 @@ import (
 	"net"
 	"os"
 
-	"github.com/entropyio/go-entropy/server/p2p/nat"
 	"github.com/entropyio/go-entropy/cmd/utils"
 	"github.com/entropyio/go-entropy/common/crypto"
-	"github.com/entropyio/go-entropy/server/p2p/discover"
 	"github.com/entropyio/go-entropy/common/netutil"
 	"github.com/entropyio/go-entropy/logger"
+	"github.com/entropyio/go-entropy/server/p2p/discover"
+	"github.com/entropyio/go-entropy/server/p2p/enode"
+	"github.com/entropyio/go-entropy/server/p2p/nat"
 )
 
 var log = logger.NewLogger("[bootnode]")
@@ -22,7 +23,7 @@ func main() {
 	var (
 		listenAddr  = flag.String("addr", ":60601", "listen address")
 		genKey      = flag.String("genkey", "", "generate a node key")
-		writeAddr   = flag.Bool("writeaddress", false, "write out the node's pubkey hash and quit")
+		writeAddr   = flag.Bool("writeaddress", false, "write out the node's public key and quit")
 		nodeKeyFile = flag.String("nodekey", "", "private key filename")
 		nodeKeyHex  = flag.String("nodekeyhex", "", "private key as hex (for testing)")
 		natdesc     = flag.String("nat", "none", "port mapping mechanism (any|none|upnp|pmp|extip:<IP>)")
@@ -63,7 +64,7 @@ func main() {
 	}
 
 	if *writeAddr {
-		fmt.Printf("%v\n", discover.PubkeyID(&nodeKey.PublicKey))
+		fmt.Printf("%x\n", crypto.FromECDSAPub(&nodeKey.PublicKey)[1:])
 		os.Exit(0)
 	}
 
@@ -89,26 +90,38 @@ func main() {
 		if !realaddr.IP.IsLoopback() {
 			go nat.Map(natm, nil, "udp", realaddr.Port, realaddr.Port, "ethereum discovery")
 		}
-		// TODO: react to external IP changes over time.
 		if ext, err := natm.ExternalIP(); err == nil {
 			realaddr = &net.UDPAddr{IP: ext, Port: realaddr.Port}
 		}
 	}
 
+	printNotice(&nodeKey.PublicKey, *realaddr)
 	//if *runv5 {
 	//	if _, err := discv5.ListenUDP(nodeKey, conn, realaddr, "", restrictList); err != nil {
 	//		utils.Fatalf("%v", err)
 	//	}
 	//} else {
-		cfg := discover.Config{
-			PrivateKey:   nodeKey,
-			AnnounceAddr: realaddr,
-			NetRestrict:  restrictList,
-		}
-		if _, err := discover.ListenUDP(conn, cfg); err != nil {
-			utils.Fatalf("%v", err)
-		}
+	db, _ := enode.OpenDB("")
+	ln := enode.NewLocalNode(db, nodeKey)
+	cfg := discover.Config{
+		PrivateKey:  nodeKey,
+		NetRestrict: restrictList,
+	}
+	if _, err := discover.ListenUDP(conn, ln, cfg); err != nil {
+		utils.Fatalf("%v", err)
+	}
 	//}
 
 	select {}
+}
+
+func printNotice(nodeKey *ecdsa.PublicKey, addr net.UDPAddr) {
+	if addr.IP.IsUnspecified() {
+		addr.IP = net.IP{127, 0, 0, 1}
+	}
+	n := enode.NewV4(nodeKey, addr.IP, 0, addr.Port)
+	fmt.Println(n.String())
+	fmt.Println("Note: you're using cmd/bootnode, a developer tool.")
+	fmt.Println("We recommend using a regular node as bootstrap node for production deployments.")
+	log.Info("We recommend using a regular node as bootstrap node for production deployments.")
 }

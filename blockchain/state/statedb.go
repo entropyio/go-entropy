@@ -1,17 +1,18 @@
 package state
 
 import (
+	"errors"
 	"fmt"
-	"math/big"
-	"sort"
-	"sync"
-
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/common/rlputil"
 	"github.com/entropyio/go-entropy/database/trie"
 	"github.com/entropyio/go-entropy/logger"
+	"github.com/entropyio/go-entropy/metrics"
+	"math/big"
+	"sort"
+	"time"
 )
 
 var stateLog = logger.NewLogger("[state]")
@@ -22,12 +23,23 @@ type revision struct {
 }
 
 var (
-	// emptyState is the known hash of an empty state trie entry.
-	emptyState = crypto.Keccak256Hash(nil)
+	// emptyRoot is the known root hash of an empty trie.
+	emptyRoot = common.HexToHash("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
 
 	// emptyCode is the known hash of the empty EVM bytecode.
 	emptyCode = crypto.Keccak256Hash(nil)
 )
+
+type proofList [][]byte
+
+func (n *proofList) Put(key []byte, value []byte) error {
+	*n = append(*n, value)
+	return nil
+}
+
+func (n *proofList) Delete(key []byte) error {
+	panic("not supported")
+}
 
 // StateDBs within the Entropy protocol are used to store anything
 // within the merkle trie. StateDBs take care of caching and storing
@@ -65,7 +77,15 @@ type StateDB struct {
 	validRevisions []revision
 	nextRevisionId int
 
-	lock sync.Mutex
+	// Measurements gathered during execution for debugging purposes
+	AccountReads   time.Duration
+	AccountHashes  time.Duration
+	AccountUpdates time.Duration
+	AccountCommits time.Duration
+	StorageReads   time.Duration
+	StorageHashes  time.Duration
+	StorageUpdates time.Duration
+	StorageCommits time.Duration
 }
 
 // Create a new state from a given trie.
@@ -154,9 +174,20 @@ func (stateDB *StateDB) Preimages() map[common.Hash][]byte {
 	return stateDB.preimages
 }
 
+// AddRefund adds gas to the refund counter
 func (stateDB *StateDB) AddRefund(gas uint64) {
 	stateDB.journal.append(refundChange{prev: stateDB.refund})
 	stateDB.refund += gas
+}
+
+// SubRefund removes gas from the refund counter.
+// This method will panic if the refund counter goes below zero
+func (stateDB *StateDB) SubRefund(gas uint64) {
+	stateDB.journal.append(refundChange{prev: stateDB.refund})
+	if gas > stateDB.refund {
+		panic("Refund counter below zero")
+	}
+	stateDB.refund -= gas
 }
 
 // Exist reports whether the given account address exists in the state.
@@ -190,6 +221,16 @@ func (stateDB *StateDB) GetNonce(addr common.Address) uint64 {
 	return 0
 }
 
+// TxIndex returns the current transaction index set by Prepare.
+func (stateDB *StateDB) TxIndex() int {
+	return stateDB.txIndex
+}
+
+// BlockHash returns the current block hash set by Prepare.
+func (stateDB *StateDB) BlockHash() common.Hash {
+	return stateDB.bhash
+}
+
 func (stateDB *StateDB) GetCode(addr common.Address) []byte {
 	stateObject := stateDB.getStateObject(addr)
 	if stateObject != nil {
@@ -221,10 +262,38 @@ func (stateDB *StateDB) GetCodeHash(addr common.Address) common.Hash {
 	return common.BytesToHash(stateObject.CodeHash())
 }
 
+// GetState retrieves a value from the given account's storage trie.
 func (stateDB *StateDB) GetState(addr common.Address, bhash common.Hash) common.Hash {
 	stateObject := stateDB.getStateObject(addr)
 	if stateObject != nil {
 		return stateObject.GetState(stateDB.db, bhash)
+	}
+	return common.Hash{}
+}
+
+// GetProof returns the MerkleProof for a given Account
+func (stateDB *StateDB) GetProof(a common.Address) ([][]byte, error) {
+	var proof proofList
+	err := stateDB.trie.Prove(crypto.Keccak256(a.Bytes()), 0, &proof)
+	return [][]byte(proof), err
+}
+
+// GetProof returns the StorageProof for given key
+func (stateDB *StateDB) GetStorageProof(a common.Address, key common.Hash) ([][]byte, error) {
+	var proof proofList
+	trie := stateDB.StorageTrie(a)
+	if trie == nil {
+		return proof, errors.New("storage trie for requested address does not exist")
+	}
+	err := trie.Prove(crypto.Keccak256(key.Bytes()), 0, &proof)
+	return [][]byte(proof), err
+}
+
+// GetCommittedState retrieves a value from the given account's committed storage trie.
+func (stateDB *StateDB) GetCommittedState(addr common.Address, hash common.Hash) common.Hash {
+	stateObject := stateDB.getStateObject(addr)
+	if stateObject != nil {
+		return stateObject.GetCommittedState(stateDB.db, hash)
 	}
 	return common.Hash{}
 }
@@ -263,8 +332,8 @@ func (stateDB *StateDB) AddBalance(addr common.Address, amount *big.Int) {
 	if stateObject != nil {
 		stateObject.AddBalance(amount)
 
-		//stateLog.Debugf("AddBalance: balance=%d, amount=%d, addr=%X",
-		//	stateObject.Balance(), amount, addr)
+		stateLog.Debugf("AddBalance: balance=%d, amount=%d, addr=0x%x",
+			stateObject.Balance(), amount, addr)
 	}
 }
 
@@ -274,7 +343,7 @@ func (stateDB *StateDB) SubBalance(addr common.Address, amount *big.Int) {
 	if stateObject != nil {
 		stateObject.SubBalance(amount)
 
-		stateLog.Debugf("SubBalance: balance=%d, amount=%d, addr=%X",
+		stateLog.Debugf("SubBalance: balance=%d, amount=%d, addr=0x%x",
 			stateObject.Balance(), amount, addr)
 	}
 }
@@ -340,6 +409,11 @@ func (stateDB *StateDB) Suicide(addr common.Address) bool {
 
 // updateStateObject writes the given object to the trie.
 func (stateDB *StateDB) updateStateObject(stateObject *stateObject) {
+	// Track the amount of time wasted on updating the account from the trie
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { stateDB.AccountUpdates += time.Since(start) }(time.Now())
+	}
+	// Encode the account and update the account trie
 	addr := stateObject.Address()
 	data, err := rlputil.EncodeToBytes(stateObject)
 	if err != nil {
@@ -350,6 +424,11 @@ func (stateDB *StateDB) updateStateObject(stateObject *stateObject) {
 
 // deleteStateObject removes the given object from the state trie.
 func (stateDB *StateDB) deleteStateObject(stateObject *stateObject) {
+	// Track the amount of time wasted on deleting the account from the trie
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { stateDB.AccountUpdates += time.Since(start) }(time.Now())
+	}
+	// Delete the account from the trie
 	stateObject.deleted = true
 	addr := stateObject.Address()
 	stateDB.setError(stateDB.trie.TryDelete(addr[:]))
@@ -364,7 +443,10 @@ func (stateDB *StateDB) getStateObject(addr common.Address) (stateObject *stateO
 		}
 		return obj
 	}
-
+	// Track the amount of time wasted on loading the object from the database
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { stateDB.AccountReads += time.Since(start) }(time.Now())
+	}
 	// Load the object from the database.
 	enc, err := stateDB.trie.TryGet(addr[:])
 	if len(enc) == 0 {
@@ -427,33 +509,36 @@ func (stateDB *StateDB) CreateAccount(addr common.Address) {
 	}
 }
 
-func (stateDB *StateDB) ForEachStorage(addr common.Address, cb func(key, value common.Hash) bool) {
+func (stateDB *StateDB) ForEachStorage(addr common.Address, cb func(key, value common.Hash) bool) error {
 	so := stateDB.getStateObject(addr)
 	if so == nil {
-		return
+		return nil
 	}
-
-	// When iterating over the storage check the cache first
-	for h, value := range so.cachedStorage {
-		cb(h, value)
-	}
-
 	it := trie.NewIterator(so.getTrie(stateDB.db).NodeIterator(nil))
 	for it.Next() {
-		// ignore cached values
 		key := common.BytesToHash(stateDB.trie.GetKey(it.Key))
-		if _, ok := so.cachedStorage[key]; !ok {
-			cb(key, common.BytesToHash(it.Value))
+		if value, dirty := so.dirtyStorage[key]; dirty {
+			if !cb(key, value) {
+				return nil
+			}
+			continue
+		}
+		if len(it.Value) > 0 {
+			_, content, _, err := rlputil.Split(it.Value)
+			if err != nil {
+				return err
+			}
+			if !cb(key, common.BytesToHash(content)) {
+				return nil
+			}
 		}
 	}
+	return nil
 }
 
 // Copy creates a deep, independent copy of the state.
 // Snapshots of the copied state cannot be applied to the copy.
 func (stateDB *StateDB) Copy() *StateDB {
-	stateDB.lock.Lock()
-	defer stateDB.lock.Unlock()
-
 	// Copy all the basic fields, initialize the memory ones
 	state := &StateDB{
 		db:                stateDB.db,
@@ -463,7 +548,7 @@ func (stateDB *StateDB) Copy() *StateDB {
 		refund:            stateDB.refund,
 		logs:              make(map[common.Hash][]*model.Log, len(stateDB.logs)),
 		logSize:           stateDB.logSize,
-		preimages:         make(map[common.Hash][]byte),
+		preimages:         make(map[common.Hash][]byte, len(stateDB.preimages)),
 		journal:           newJournal(),
 	}
 	// Copy the dirty states, logs, and preimages
@@ -488,8 +573,12 @@ func (stateDB *StateDB) Copy() *StateDB {
 	}
 
 	for hash, logs := range stateDB.logs {
-		state.logs[hash] = make([]*model.Log, len(logs))
-		copy(state.logs[hash], logs)
+		cpy := make([]*model.Log, len(logs))
+		for i, l := range logs {
+			cpy[i] = new(model.Log)
+			*cpy[i] = *l
+		}
+		state.logs[hash] = cpy
 	}
 	for hash, preimage := range stateDB.preimages {
 		state.preimages[hash] = preimage
@@ -558,6 +647,11 @@ func (stateDB *StateDB) Finalise(deleteEmptyObjects bool) {
 // goes into transaction receipts.
 func (stateDB *StateDB) IntermediateRoot(deleteEmptyObjects bool) common.Hash {
 	stateDB.Finalise(deleteEmptyObjects)
+
+	// Track the amount of time wasted on hashing the account trie
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { stateDB.AccountHashes += time.Since(start) }(time.Now())
+	}
 	return stateDB.trie.Hash()
 }
 
@@ -577,14 +671,14 @@ func (stateDB *StateDB) clearJournalAndRefund() {
 
 // Commit writes the state to the underlying in-memory trie database.
 func (stateDB *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err error) {
-	stateLog.Debugf("start Trie cache commit. root:%X", root)
+	//stateLog.Debugf("start Trie cache commit. root:%X", root)
 
 	defer stateDB.clearJournalAndRefund()
 
 	for addr := range stateDB.journal.dirties {
 		stateDB.stateObjectsDirty[addr] = struct{}{}
 	}
-	// Commit objects to the trie.
+	// Commit objects to the trie, measuring the elapsed time
 	for addr, stateObject := range stateDB.stateObjects {
 		_, isDirty := stateDB.stateObjectsDirty[addr]
 		switch {
@@ -607,13 +701,16 @@ func (stateDB *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err e
 		}
 		delete(stateDB.stateObjectsDirty, addr)
 	}
-	// Write trie changes.
+	// Write the account trie changes, measuing the amount of wasted time
+	if metrics.EnabledExpensive {
+		defer func(start time.Time) { stateDB.AccountCommits += time.Since(start) }(time.Now())
+	}
 	root, err = stateDB.trie.Commit(func(leaf []byte, parent common.Hash) error {
 		var account Account
 		if err := rlputil.DecodeBytes(leaf, &account); err != nil {
 			return nil
 		}
-		if account.Root != emptyState {
+		if account.Root != emptyRoot {
 			stateDB.db.TrieDB().Reference(account.Root, parent)
 		}
 		code := common.BytesToHash(account.CodeHash)
@@ -622,6 +719,6 @@ func (stateDB *StateDB) Commit(deleteEmptyObjects bool) (root common.Hash, err e
 		}
 		return nil
 	})
-	stateLog.Debug("Trie cache stats after commit", "misses", trie.CacheMisses(), "unloads", trie.CacheUnloads())
+	//stateLog.Debug("Trie cache stats after commit", "misses", trie.CacheMisses(), "unloads", trie.CacheUnloads())
 	return root, err
 }

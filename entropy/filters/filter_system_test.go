@@ -71,7 +71,7 @@ func (b *testBackend) HeaderByHash(ctx context.Context, hash common.Hash) (*mode
 
 func (b *testBackend) GetReceipts(ctx context.Context, hash common.Hash) (model.Receipts, error) {
 	if number := mapper.ReadHeaderNumber(b.db, hash); number != nil {
-		return mapper.ReadReceipts(b.db, hash, *number), nil
+		return mapper.ReadReceipts(b.db, hash, *number, config.TestChainConfig), nil
 	}
 	return nil, nil
 }
@@ -81,7 +81,7 @@ func (b *testBackend) GetLogs(ctx context.Context, hash common.Hash) ([][]*model
 	if number == nil {
 		return nil, nil
 	}
-	receipts := mapper.ReadReceipts(b.db, hash, *number)
+	receipts := mapper.ReadReceipts(b.db, hash, *number, config.TestChainConfig)
 
 	logs := make([][]*model.Log, len(receipts))
 	for i, receipt := range receipts {
@@ -147,7 +147,7 @@ func TestBlockSubscription(t *testing.T) {
 
 	var (
 		mux         = new(event.TypeMux)
-		db          = database.NewMemDatabase()
+		db          = mapper.NewMemoryDatabase()
 		txFeed      = new(event.Feed)
 		rmLogsFeed  = new(event.Feed)
 		logsFeed    = new(event.Feed)
@@ -204,7 +204,7 @@ func TestPendingTxFilter(t *testing.T) {
 
 	var (
 		mux        = new(event.TypeMux)
-		db         = database.NewMemDatabase()
+		db         = mapper.NewMemoryDatabase()
 		txFeed     = new(event.Feed)
 		rmLogsFeed = new(event.Feed)
 		logsFeed   = new(event.Feed)
@@ -264,7 +264,7 @@ func TestPendingTxFilter(t *testing.T) {
 func TestLogFilterCreation(t *testing.T) {
 	var (
 		mux        = new(event.TypeMux)
-		db         = database.NewMemDatabase()
+		db         = mapper.NewMemoryDatabase()
 		txFeed     = new(event.Feed)
 		rmLogsFeed = new(event.Feed)
 		logsFeed   = new(event.Feed)
@@ -313,7 +313,7 @@ func TestInvalidLogFilterCreation(t *testing.T) {
 
 	var (
 		mux        = new(event.TypeMux)
-		db         = database.NewMemDatabase()
+		db         = mapper.NewMemoryDatabase()
 		txFeed     = new(event.Feed)
 		rmLogsFeed = new(event.Feed)
 		logsFeed   = new(event.Feed)
@@ -340,7 +340,7 @@ func TestInvalidLogFilterCreation(t *testing.T) {
 func TestInvalidGetLogsRequest(t *testing.T) {
 	var (
 		mux        = new(event.TypeMux)
-		db         = database.NewMemDatabase()
+		db         = mapper.NewMemoryDatabase()
 		txFeed     = new(event.Feed)
 		rmLogsFeed = new(event.Feed)
 		logsFeed   = new(event.Feed)
@@ -370,7 +370,7 @@ func TestLogFilter(t *testing.T) {
 
 	var (
 		mux        = new(event.TypeMux)
-		db         = database.NewMemDatabase()
+		db         = mapper.NewMemoryDatabase()
 		txFeed     = new(event.Feed)
 		rmLogsFeed = new(event.Feed)
 		logsFeed   = new(event.Feed)
@@ -489,7 +489,7 @@ func TestPendingLogsSubscription(t *testing.T) {
 
 	var (
 		mux        = new(event.TypeMux)
-		db         = database.NewMemDatabase()
+		db         = mapper.NewMemoryDatabase()
 		txFeed     = new(event.Feed)
 		rmLogsFeed = new(event.Feed)
 		logsFeed   = new(event.Feed)

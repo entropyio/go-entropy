@@ -13,9 +13,9 @@ import (
 	"os"
 
 	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/common/crypto/sha3"
 	"github.com/entropyio/go-entropy/common/mathutil"
 	"github.com/entropyio/go-entropy/common/rlputil"
+	"golang.org/x/crypto/sha3"
 )
 
 var (
@@ -27,7 +27,7 @@ var errInvalidPubkey = errors.New("invalid secp256k1 public key")
 
 // Keccak256 calculates and returns the Keccak256 hash of the input data.
 func Keccak256(data ...[]byte) []byte {
-	d := sha3.NewKeccak256()
+	d := sha3.NewLegacyKeccak256()
 	for _, b := range data {
 		d.Write(b)
 	}
@@ -37,7 +37,7 @@ func Keccak256(data ...[]byte) []byte {
 // Keccak256Hash calculates and returns the Keccak256 hash of the input data,
 // converting it to an internal Hash data structure.
 func Keccak256Hash(data ...[]byte) (h common.Hash) {
-	d := sha3.NewKeccak256()
+	d := sha3.NewLegacyKeccak256()
 	for _, b := range data {
 		d.Write(b)
 	}
@@ -47,7 +47,7 @@ func Keccak256Hash(data ...[]byte) (h common.Hash) {
 
 // Keccak512 calculates and returns the Keccak512 hash of the input data.
 func Keccak512(data ...[]byte) []byte {
-	d := sha3.NewKeccak512()
+	d := sha3.NewLegacyKeccak512()
 	for _, b := range data {
 		d.Write(b)
 	}
@@ -61,9 +61,9 @@ func CreateAddress(b common.Address, nonce uint64) common.Address {
 }
 
 // CreateAddress2 creates an ethereum address given the address bytes, initial
-// contract code and a salt.
-func CreateAddress2(b common.Address, salt [32]byte, code []byte) common.Address {
-	return common.BytesToAddress(Keccak256([]byte{0xff}, b.Bytes(), salt[:], Keccak256(code))[12:])
+// contract code hash and a salt.
+func CreateAddress2(b common.Address, salt [32]byte, inithash []byte) common.Address {
+	return common.BytesToAddress(Keccak256([]byte{0xff}, b.Bytes(), salt[:], inithash)[12:])
 }
 
 // ToECDSA creates a private key with the given D value.

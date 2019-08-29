@@ -5,11 +5,11 @@ import (
 	"math/big"
 
 	"github.com/entropyio/go-entropy/blockchain/genesis"
+	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus/ethash"
-	"github.com/entropyio/go-entropy/database"
 	"github.com/entropyio/go-entropy/evm"
 )
 
@@ -21,7 +21,7 @@ func ExampleGenerateChain() {
 		addr1   = crypto.PubkeyToAddress(key1.PublicKey)
 		addr2   = crypto.PubkeyToAddress(key2.PublicKey)
 		addr3   = crypto.PubkeyToAddress(key3.PublicKey)
-		db      = database.NewMemDatabase()
+		db      = mapper.NewMemoryDatabase()
 	)
 
 	// Ensure that key1 has some funds in the genesis block.
@@ -64,7 +64,7 @@ func ExampleGenerateChain() {
 	})
 
 	// Import the chain. This runs all block validation rules.
-	blockchain, _ := NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{})
+	blockchain, _ := NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{}, nil)
 	defer blockchain.Stop()
 
 	if i, err := blockchain.InsertChain(chain); err != nil {

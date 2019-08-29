@@ -248,7 +248,10 @@ func (ac *accountCache) scanAccounts() error {
 		case (addr == common.Address{}):
 			log.Debug("Failed to decode keystore key", "path", path, "err", "missing or zero address")
 		default:
-			return &account.Account{Address: addr, URL: account.URL{Scheme: KeyStoreScheme, Path: path}}
+			return &account.Account{
+				Address: addr,
+				URL:     account.URL{Scheme: KeyStoreScheme, Path: path},
+			}
 		}
 		return nil
 	}

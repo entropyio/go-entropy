@@ -23,14 +23,8 @@ import (
 // cases to ensure that resources related to the subscription are released. It can be
 // called any number of times.
 type Subscription interface {
-	// Unsubscribe cancels the sending of events to the data channel
-	// and closes the error channel.
-	Unsubscribe()
-	// Err returns the subscription error channel. The error channel receives
-	// a value if there is an issue with the subscription (e.g. the network connection
-	// delivering the events has been closed). Only one value will ever be sent.
-	// The error channel is closed by Unsubscribe.
-	Err() <-chan error
+	Err() <-chan error // returns the error channel
+	Unsubscribe()      // cancels sending of events, closing the error channel
 }
 
 // NewSubscription runs a producer function as a subscription in a new goroutine. The

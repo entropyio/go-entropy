@@ -1,12 +1,12 @@
-package entropy
+package entropy_test
 
 import (
 	"fmt"
 	"github.com/entropyio/go-entropy/blockchain"
+	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/config"
-	"github.com/entropyio/go-entropy/database"
 	"github.com/entropyio/go-entropy/evm"
 	"github.com/entropyio/go-entropy/evm/runtime"
 	"math/big"
@@ -40,7 +40,7 @@ func TestEVM_Call(t *testing.T) {
 		},
 	}
 
-	stateDb, _ := state.New(common.Hash{}, state.NewDatabase(database.NewMemDatabase()))
+	stateDb, _ := state.New(common.Hash{}, state.NewDatabase(mapper.NewMemoryDatabase()))
 	stateDb.SetState(from, common.HexToHash("0xf7fe84ec6d79bb7ae74ee5c301a551b0440b27e2"), common.HexToHash("0xf7fe84ec6d79bb7ae74ee5c301a551b0440b27e2"))
 	stateDb.AddBalance(from, big.NewInt(420000000000000000))
 

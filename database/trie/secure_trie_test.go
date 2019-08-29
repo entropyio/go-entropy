@@ -8,20 +8,19 @@ import (
 
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
-	"github.com/entropyio/go-entropy/database"
+	"github.com/entropyio/go-entropy/database/memorydb"
 )
 
 func newEmptySecure() *SecureTrie {
-	trie, _ := NewSecure(common.Hash{}, NewDatabase(database.NewMemDatabase()), 0)
+	trie, _ := NewSecure(common.Hash{}, NewDatabase(memorydb.New()))
 	return trie
 }
 
 // makeTestSecureTrie creates a large enough secure trie for testing.
 func makeTestSecureTrie() (*TrieDatabase, *SecureTrie, map[string][]byte) {
 	// Create an empty trie
-	triedb := NewDatabase(database.NewMemDatabase())
-
-	trie, _ := NewSecure(common.Hash{}, triedb, 0)
+	triedb := NewDatabase(memorydb.New())
+	trie, _ := NewSecure(common.Hash{}, triedb)
 
 	// Fill it with some arbitrary data
 	content := make(map[string][]byte)

@@ -60,51 +60,65 @@ var (
 		executablePath("puppentropy"),
 		executablePath("rlpdump"),
 		executablePath("wnode"),
+		executablePath("clef"),
 	}
 
 	// A debian package is created for all executables listed here.
 	debExecutables = []debExecutable{
 		{
-			Name:        "abigen",
+			BinaryName:  "abigen",
 			Description: "Source code generator to convert Entropy contract definitions into easy to use, compile-time type-safe Go packages.",
 		},
 		{
-			Name:        "bootnode",
+			BinaryName:  "bootnode",
 			Description: "Entropy bootnode.",
 		},
 		{
-			Name:        "evm",
+			BinaryName:  "evm",
 			Description: "Developer utility version of the EVM (Entropy Virtual Machine) that is capable of running bytecode snippets within a configurable environment and execution mode.",
 		},
 		{
-			Name:        "entropy",
+			BinaryName:  "entropy",
 			Description: "Entropy CLI client.",
 		},
 		{
-			Name:        "puppentropy",
+			BinaryName:  "puppentropy",
 			Description: "Entropy private network manager.",
 		},
 		{
-			Name:        "rlpdump",
+			BinaryName:  "rlpdump",
 			Description: "Developer utility tool that prints RLP structures.",
 		},
 		{
-			Name:        "swarm",
-			Description: "Entropy Swarm daemon and tools",
-		},
-		{
-			Name:        "wnode",
+			BinaryName:  "wnode",
 			Description: "Entropy Whisper diagnostic tool",
 		},
+		{
+			BinaryName:  "clef",
+			Description: "Entropy account management tool.",
+		},
+	}
+
+	// A debian package is created for all executables listed here.
+
+	debEthereum = debPackage{
+		Name:        "ethereum",
+		Version:     params.Version,
+		Executables: debExecutables,
+	}
+
+	// Debian meta packages to build and push to Ubuntu PPA
+	debPackages = []debPackage{
+		debEthereum,
 	}
 
 	// Distros for which packages are created.
 	// Note: vivid is unsupported because there is no golang-1.6 package for it.
-	// Note: wily is unsupported because it was officially deprecated on lanchpad.
-	// Note: yakkety is unsupported because it was officially deprecated on lanchpad.
-	// Note: zesty is unsupported because it was officially deprecated on lanchpad.
-	// Note: artful is unsupported because it was officially deprecated on lanchpad.
-	debDistros = []string{"trusty", "xenial", "bionic", "cosmic"}
+	// Note: wily is unsupported because it was officially deprecated on Launchpad.
+	// Note: yakkety is unsupported because it was officially deprecated on Launchpad.
+	// Note: zesty is unsupported because it was officially deprecated on Launchpad.
+	// Note: artful is unsupported because it was officially deprecated on Launchpad.
+	debDistros = []string{"trusty", "xenial", "bionic", "cosmic", "disco"}
 )
 
 var GOBIN, _ = filepath.Abs(filepath.Join("build", "bin"))
@@ -227,6 +241,7 @@ func buildFlags(env build.Environment) (flags []string) {
 	var ld []string
 	if env.Commit != "" {
 		ld = append(ld, "-X", "main.gitCommit="+env.Commit)
+		ld = append(ld, "-X", "main.gitDate="+env.Date)
 	}
 	if runtime.GOOS == "darwin" {
 		ld = append(ld, "-s")
@@ -268,9 +283,7 @@ func goToolArch(arch string, cc string, subcmd string, args ...string) *exec.Cmd
 // "tests" also includes static analysis tools such as vet.
 
 func doTest(cmdline []string) {
-	var (
-		coverage = flag.Bool("coverage", false, "Whether to record code coverage")
-	)
+	coverage := flag.Bool("coverage", false, "Whether to record code coverage")
 	flag.CommandLine.Parse(cmdline)
 	env := build.Env()
 
@@ -280,14 +293,11 @@ func doTest(cmdline []string) {
 	}
 	packages = build.ExpandPackagesNoVendor(packages)
 
-	// Run analysis tools before the tests.
-	build.MustRun(goTool("vet", packages...))
-
 	// Run the actual tests.
-	gotest := goTool("test", buildFlags(env)...)
 	// Test a single package at a time. CI builders are slow
 	// and some tests run into timeouts under load.
-	gotest.Args = append(gotest.Args, "-p", "1")
+	gotest := goTool("test", buildFlags(env)...)
+	gotest.Args = append(gotest.Args, "-p", "1", "-timeout", "5m")
 	if *coverage {
 		gotest.Args = append(gotest.Args, "-covermode=atomic", "-cover")
 	}
@@ -353,7 +363,7 @@ func doArchive(cmdline []string) {
 
 	var (
 		env      = build.Env()
-		base     = archiveBasename(*arch, env)
+		base     = archiveBasename(*arch, params.ArchiveVersion(env.Commit))
 		entropy  = "entropy-" + base + ext
 		alltools = "entropy-alltools-" + base + ext
 	)
@@ -371,7 +381,7 @@ func doArchive(cmdline []string) {
 	}
 }
 
-func archiveBasename(arch string, env build.Environment) string {
+func archiveBasename(arch string, archiveVersion string) string {
 	platform := runtime.GOOS + "-" + arch
 	if arch == "arm" {
 		platform += os.Getenv("GOARM")
@@ -382,32 +392,33 @@ func archiveBasename(arch string, env build.Environment) string {
 	if arch == "ios" {
 		platform = "ios-all"
 	}
-	return platform + "-" + archiveVersion(env)
-}
-
-func archiveVersion(env build.Environment) string {
-	version := build.VERSION()
-	if isUnstableBuild(env) {
-		version += "-unstable"
-	}
-	if env.Commit != "" {
-		version += "-" + env.Commit[:8]
-	}
-	return version
+	return platform + "-" + archiveVersion
 }
 
 func archiveUpload(archive string, blobstore string, signer string) error {
 	// If signing was requested, generate the signature files
 	if signer != "" {
-		pgpkey, err := base64.StdEncoding.DecodeString(os.Getenv(signer))
-		if err != nil {
-			return fmt.Errorf("invalid base64 %s", signer)
-		}
-		if err := build.PGPSignFile(archive, archive+".asc", string(pgpkey)); err != nil {
+		key := getenvBase64(signer)
+		if err := build.PGPSignFile(archive, archive+".asc", string(key)); err != nil {
 			return err
 		}
 	}
-
+	// If uploading to Azure was requested, push the archive possibly with its signature
+	if blobstore != "" {
+		auth := build.AzureBlobstoreConfig{
+			Account:   strings.Split(blobstore, "/")[0],
+			Token:     os.Getenv("AZURE_BLOBSTORE_TOKEN"),
+			Container: strings.SplitN(blobstore, "/", 2)[1],
+		}
+		if err := build.AzureBlobstoreUpload(archive, filepath.Base(archive), auth); err != nil {
+			return err
+		}
+		if signer != "" {
+			if err := build.AzureBlobstoreUpload(archive+".asc", filepath.Base(archive+".asc"), auth); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 
@@ -432,7 +443,8 @@ func maybeSkipArchive(env build.Environment) {
 func doDebianSource(cmdline []string) {
 	var (
 		signer  = flag.String("signer", "", `Signing key name, also used as package author`)
-		upload  = flag.String("upload", "", `Where to upload the source package (usually "ppa:entropy/entropy")`)
+		upload  = flag.String("upload", "", `Where to upload the source package (usually "entropy/entropy")`)
+		sshUser = flag.String("sftp-user", "", `Username for SFTP upload (usually "entropy-ci")`)
 		workdir = flag.String("workdir", "", `Output directory for packages (uses temp dir if unset)`)
 		now     = time.Now()
 	)
@@ -442,33 +454,67 @@ func doDebianSource(cmdline []string) {
 	maybeSkipArchive(env)
 
 	// Import the signing key.
-	if b64key := os.Getenv("PPA_SIGNING_KEY"); b64key != "" {
-		key, err := base64.StdEncoding.DecodeString(b64key)
-		if err != nil {
-			log.Fatal("invalid base64 PPA_SIGNING_KEY")
-		}
+	if key := getenvBase64("PPA_SIGNING_KEY"); len(key) > 0 {
 		gpg := exec.Command("gpg", "--import")
 		gpg.Stdin = bytes.NewReader(key)
 		build.MustRun(gpg)
 	}
 
-	// Create the packages.
-	for _, distro := range debDistros {
-		meta := newDebMetadata(distro, *signer, env, now)
-		pkgdir := stageDebianSource(*workdir, meta)
-		debuild := exec.Command("debuild", "-S", "-sa", "-us", "-uc")
-		debuild.Dir = pkgdir
-		build.MustRun(debuild)
+	// Create Debian packages and upload them
+	for _, pkg := range debPackages {
+		for _, distro := range debDistros {
+			meta := newDebMetadata(distro, *signer, env, now, pkg.Name, pkg.Version, pkg.Executables)
+			pkgdir := stageDebianSource(*workdir, meta)
+			debuild := exec.Command("debuild", "-S", "-sa", "-us", "-uc", "-d", "-Zxz")
+			debuild.Dir = pkgdir
+			build.MustRun(debuild)
 
-		changes := fmt.Sprintf("%s_%s_source.changes", meta.Name(), meta.VersionString())
-		changes = filepath.Join(*workdir, changes)
-		if *signer != "" {
-			build.MustRunCommand("debsign", changes)
-		}
-		if *upload != "" {
-			build.MustRunCommand("dput", *upload, changes)
+			var (
+				basename = fmt.Sprintf("%s_%s", meta.Name(), meta.VersionString())
+				source   = filepath.Join(*workdir, basename+".tar.xz")
+				dsc      = filepath.Join(*workdir, basename+".dsc")
+				changes  = filepath.Join(*workdir, basename+"_source.changes")
+			)
+			if *signer != "" {
+				build.MustRunCommand("debsign", changes)
+			}
+			if *upload != "" {
+				ppaUpload(*workdir, *upload, *sshUser, []string{source, dsc, changes})
+			}
 		}
 	}
+}
+
+func ppaUpload(workdir, ppa, sshUser string, files []string) {
+	p := strings.Split(ppa, "/")
+	if len(p) != 2 {
+		log.Fatal("-upload PPA name must contain single /")
+	}
+	if sshUser == "" {
+		sshUser = p[0]
+	}
+	incomingDir := fmt.Sprintf("~%s/ubuntu/%s", p[0], p[1])
+	// Create the SSH identity file if it doesn't exist.
+	var idfile string
+	if sshkey := getenvBase64("PPA_SSH_KEY"); len(sshkey) > 0 {
+		idfile = filepath.Join(workdir, "sshkey")
+		if _, err := os.Stat(idfile); os.IsNotExist(err) {
+			ioutil.WriteFile(idfile, sshkey, 0600)
+		}
+	}
+	// Upload
+	dest := sshUser + "@ppa.launchpad.net"
+	if err := build.UploadSFTP(idfile, dest, incomingDir, files); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func getenvBase64(variable string) []byte {
+	dec, err := base64.StdEncoding.DecodeString(os.Getenv(variable))
+	if err != nil {
+		log.Fatal("invalid base64 " + variable)
+	}
+	return []byte(dec)
 }
 
 func makeWorkdir(wdflag string) string {
@@ -491,8 +537,16 @@ func isUnstableBuild(env build.Environment) bool {
 	return true
 }
 
+type debPackage struct {
+	Name        string          // the name of the Debian package to produce, e.g. "ethereum"
+	Version     string          // the clean version of the debPackage, e.g. 1.8.12, without any metadata
+	Executables []debExecutable // executables to be included in the package
+}
+
 type debMetadata struct {
 	Env build.Environment
+
+	PackageName string
 
 	// go-entropy version being built. Note that this
 	// is not the debian package version. The package version
@@ -505,21 +559,33 @@ type debMetadata struct {
 }
 
 type debExecutable struct {
-	Name, Description string
+	PackageName string
+	BinaryName  string
+	Description string
 }
 
-func newDebMetadata(distro, author string, env build.Environment, t time.Time) debMetadata {
+// Package returns the name of the package if present, or
+// fallbacks to BinaryName
+func (d debExecutable) Package() string {
+	if d.PackageName != "" {
+		return d.PackageName
+	}
+	return d.BinaryName
+}
+
+func newDebMetadata(distro, author string, env build.Environment, t time.Time, name string, version string, exes []debExecutable) debMetadata {
 	if author == "" {
 		// No signing key, use default author.
-		author = "Entropy Builds <fjl@entropy.org>"
+		author = "Entropy Builds <starwz@gmail.com>"
 	}
 	return debMetadata{
+		PackageName: name,
 		Env:         env,
 		Author:      author,
 		Distro:      distro,
-		Version:     build.VERSION(),
+		Version:     version,
 		Time:        t.Format(time.RFC1123Z),
-		Executables: debExecutables,
+		Executables: exes,
 	}
 }
 
@@ -527,9 +593,9 @@ func newDebMetadata(distro, author string, env build.Environment, t time.Time) d
 // on all executable packages.
 func (meta debMetadata) Name() string {
 	if isUnstableBuild(meta.Env) {
-		return "entropy-unstable"
+		return meta.PackageName + "-unstable"
 	}
-	return "entropy"
+	return meta.PackageName
 }
 
 // VersionString returns the debian version of the packages.
@@ -556,9 +622,9 @@ func (meta debMetadata) ExeList() string {
 // ExeName returns the package name of an executable package.
 func (meta debMetadata) ExeName(exe debExecutable) string {
 	if isUnstableBuild(meta.Env) {
-		return exe.Name + "-unstable"
+		return exe.Package() + "-unstable"
 	}
-	return exe.Name
+	return exe.Package()
 }
 
 // ExeConflicts returns the content of the Conflicts field
@@ -573,7 +639,7 @@ func (meta debMetadata) ExeConflicts(exe debExecutable) string {
 		// be preferred and the conflicting files should be handled via
 		// alternates. We might do this eventually but using a conflict is
 		// easier now.
-		return "entropy, " + exe.Name
+		return "entropy, " + exe.Package()
 	}
 	return ""
 }
@@ -590,17 +656,17 @@ func stageDebianSource(tmpdir string, meta debMetadata) (pkgdir string) {
 
 	// Put the debian build files in place.
 	debian := filepath.Join(pkgdir, "debian")
-	build.Render("build/deb.rules", filepath.Join(debian, "rules"), 0755, meta)
-	build.Render("build/deb.changelog", filepath.Join(debian, "changelog"), 0644, meta)
-	build.Render("build/deb.control", filepath.Join(debian, "control"), 0644, meta)
-	build.Render("build/deb.copyright", filepath.Join(debian, "copyright"), 0644, meta)
+	build.Render("build/deb/"+meta.PackageName+"/deb.rules", filepath.Join(debian, "rules"), 0755, meta)
+	build.Render("build/deb/"+meta.PackageName+"/deb.changelog", filepath.Join(debian, "changelog"), 0644, meta)
+	build.Render("build/deb/"+meta.PackageName+"/deb.control", filepath.Join(debian, "control"), 0644, meta)
+	build.Render("build/deb/"+meta.PackageName+"/deb.copyright", filepath.Join(debian, "copyright"), 0644, meta)
 	build.RenderString("8\n", filepath.Join(debian, "compat"), 0644, meta)
 	build.RenderString("3.0 (native)\n", filepath.Join(debian, "source/format"), 0644, meta)
 	for _, exe := range meta.Executables {
 		install := filepath.Join(debian, meta.ExeName(exe)+".install")
 		docs := filepath.Join(debian, meta.ExeName(exe)+".docs")
-		build.Render("build/deb.install", install, 0644, exe)
-		build.Render("build/deb.docs", docs, 0644, exe)
+		build.Render("build/deb/"+meta.PackageName+"/deb.install", install, 0644, exe)
+		build.Render("build/deb/"+meta.PackageName+"/deb.docs", docs, 0644, exe)
 	}
 
 	return pkgdir
@@ -657,11 +723,11 @@ func doWindowsInstaller(cmdline []string) {
 	// Build the installer. This assumes that all the needed files have been previously
 	// built (don't mix building and packaging to keep cross compilation complexity to a
 	// minimum).
-	version := strings.Split(build.VERSION(), ".")
+	version := strings.Split(params.Version, ".")
 	if env.Commit != "" {
 		version[2] += "-" + env.Commit[:8]
 	}
-	installer, _ := filepath.Abs("entropy-" + archiveBasename(*arch, env) + ".exe")
+	installer, _ := filepath.Abs("entropy-" + archiveBasename(*arch, params.ArchiveVersion(env.Commit)) + ".exe")
 	build.MustRunCommand("makensis.exe",
 		"/DOUTPUTFILE="+installer,
 		"/DMAJORVERSION="+version[0],
@@ -693,12 +759,8 @@ func doAndroidArchive(cmdline []string) {
 	if os.Getenv("ANDROID_HOME") == "" {
 		log.Fatal("Please ensure ANDROID_HOME points to your Android SDK")
 	}
-	if os.Getenv("ANDROID_NDK") == "" {
-		log.Fatal("Please ensure ANDROID_NDK points to your Android NDK")
-	}
 	// Build the Android archive and Maven resources
 	build.MustRun(goTool("get", "golang.org/x/mobile/cmd/gomobile", "golang.org/x/mobile/cmd/gobind"))
-	build.MustRun(gomobileTool("init", "--ndk", os.Getenv("ANDROID_NDK")))
 	build.MustRun(gomobileTool("bind", "-ldflags", "-s -w", "--target", "android", "--javapkg", "org.entropy", "-v", "github.com/entropy/go-entropy/mobile"))
 
 	if *local {
@@ -713,7 +775,7 @@ func doAndroidArchive(cmdline []string) {
 	maybeSkipArchive(env)
 
 	// Sign and upload the archive to Azure
-	archive := "entropy-" + archiveBasename("android", env) + ".aar"
+	archive := "entropy-" + archiveBasename("android", params.ArchiveVersion(env.Commit)) + ".aar"
 	os.Rename("entropy.aar", archive)
 
 	if err := archiveUpload(archive, *upload, *signer); err != nil {
@@ -723,11 +785,7 @@ func doAndroidArchive(cmdline []string) {
 	os.Rename(archive, meta.Package+".aar")
 	if *signer != "" && *deploy != "" {
 		// Import the signing key into the local GPG instance
-		b64key := os.Getenv(*signer)
-		key, err := base64.StdEncoding.DecodeString(b64key)
-		if err != nil {
-			log.Fatalf("invalid base64 %s", *signer)
-		}
+		key := getenvBase64(*signer)
 		gpg := exec.Command("gpg", "--import")
 		gpg.Stdin = bytes.NewReader(key)
 		build.MustRun(gpg)
@@ -798,7 +856,7 @@ func newMavenMetadata(env build.Environment) mavenMetadata {
 		}
 	}
 	// Render the version and package strings
-	version := build.VERSION()
+	version := params.Version
 	if isUnstableBuild(env) {
 		version += "-SNAPSHOT"
 	}
@@ -833,7 +891,7 @@ func doXCodeFramework(cmdline []string) {
 		build.MustRun(bind)
 		return
 	}
-	archive := "entropy-" + archiveBasename("ios", env)
+	archive := "entropy-" + archiveBasename("ios", params.ArchiveVersion(env.Commit))
 	if err := os.Mkdir(archive, os.ModePerm); err != nil {
 		log.Fatal(err)
 	}
@@ -889,7 +947,7 @@ func newPodMetadata(env build.Environment, archive string) podMetadata {
 			}
 		}
 	}
-	version := build.VERSION()
+	version := params.Version
 	if isUnstableBuild(env) {
 		version += "-unstable." + env.Buildnum
 	}
@@ -956,5 +1014,49 @@ func xgoTool(args []string) *exec.Cmd {
 // Binary distribution cleanups
 
 func doPurge(cmdline []string) {
-	// do cleanup
+	var (
+		store = flag.String("store", "", `Destination from where to purge archives (usually "gethstore/builds")`)
+		limit = flag.Int("days", 30, `Age threshold above which to delete unstable archives`)
+	)
+	flag.CommandLine.Parse(cmdline)
+
+	if env := build.Env(); !env.IsCronJob {
+		log.Printf("skipping because not a cron job")
+		os.Exit(0)
+	}
+	// Create the azure authentication and list the current archives
+	auth := build.AzureBlobstoreConfig{
+		Account:   strings.Split(*store, "/")[0],
+		Token:     os.Getenv("AZURE_BLOBSTORE_TOKEN"),
+		Container: strings.SplitN(*store, "/", 2)[1],
+	}
+	blobs, err := build.AzureBlobstoreList(auth)
+	if err != nil {
+		log.Fatal(err)
+	}
+	// Iterate over the blobs, collect and sort all unstable builds
+	for i := 0; i < len(blobs); i++ {
+		if !strings.Contains(blobs[i].Name, "unstable") {
+			blobs = append(blobs[:i], blobs[i+1:]...)
+			i--
+		}
+	}
+	for i := 0; i < len(blobs); i++ {
+		for j := i + 1; j < len(blobs); j++ {
+			if blobs[i].Properties.LastModified.After(blobs[j].Properties.LastModified) {
+				blobs[i], blobs[j] = blobs[j], blobs[i]
+			}
+		}
+	}
+	// Filter out all archives more recent that the given threshold
+	for i, blob := range blobs {
+		if time.Since(blob.Properties.LastModified) < time.Duration(*limit)*24*time.Hour {
+			blobs = blobs[:i]
+			break
+		}
+	}
+	// Delete all marked as such and return
+	if err := build.AzureBlobstoreDelete(auth, blobs); err != nil {
+		log.Fatal(err)
+	}
 }

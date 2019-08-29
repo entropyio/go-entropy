@@ -4,6 +4,7 @@ package rpc
 
 import (
 	"context"
+	"fmt"
 	"net"
 	"os"
 	"path/filepath"
@@ -11,6 +12,11 @@ import (
 
 // ipcListen will create a Unix socket on the given endpoint.
 func ipcListen(endpoint string) (net.Listener, error) {
+	if len(endpoint) > int(max_path_size) {
+		log.Warning(fmt.Sprintf("The ipc endpoint is longer than %d characters. ", max_path_size),
+			"endpoint", endpoint)
+	}
+
 	// Ensure the IPC path exists and remove any previous leftover
 	if err := os.MkdirAll(filepath.Dir(endpoint), 0751); err != nil {
 		return nil, err

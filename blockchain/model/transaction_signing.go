@@ -26,8 +26,10 @@ type sigCache struct {
 func MakeSigner(config *config.ChainConfig, blockNumber *big.Int) Signer {
 	var signer Signer
 	switch {
-	case config.IsHomestead(blockNumber):
+	case config.IsEIP155(blockNumber):
 		signer = NewEIP155Signer(config.ChainID)
+	case config.IsHomestead(blockNumber):
+		signer = HomesteadSigner{}
 	default:
 		signer = FrontierSigner{}
 	}
@@ -118,7 +120,7 @@ func (s EIP155Signer) Sender(tx *Transaction) (common.Address, error) {
 	return recoverPlain(s.Hash(tx), tx.data.R, tx.data.S, V, true)
 }
 
-// WithSignature returns a new transaction with the given signature. This signature
+// SignatureValues returns signature values. This signature
 // needs to be in the [R || S || V] format where V is 0 or 1.
 func (s EIP155Signer) SignatureValues(tx *Transaction, sig []byte) (R, S, V *big.Int, err error) {
 	R, S, V, err = HomesteadSigner{}.SignatureValues(tx, sig)
@@ -150,7 +152,7 @@ func (s EIP155Signer) Hash(tx *Transaction) common.Hash {
 // homestead rules.
 type HomesteadSigner struct{ FrontierSigner }
 
-func (hs HomesteadSigner) Equal(s2 Signer) bool {
+func (s HomesteadSigner) Equal(s2 Signer) bool {
 	_, ok := s2.(HomesteadSigner)
 	return ok
 }
@@ -209,13 +211,13 @@ func recoverPlain(sighash common.Hash, R, S, Vb *big.Int, homestead bool) (commo
 	if !crypto.ValidateSignatureValues(V, R, S, homestead) {
 		return common.Address{}, ErrInvalidSig
 	}
-	// encode the snature in uncompressed format
+	// encode the signature in uncompressed format
 	r, s := R.Bytes(), S.Bytes()
 	sig := make([]byte, 65)
 	copy(sig[32-len(r):32], r)
 	copy(sig[64-len(s):64], s)
 	sig[64] = V
-	// recover the public key from the snature
+	// recover the public key from the signature
 	pub, err := crypto.Ecrecover(sighash[:], sig)
 	if err != nil {
 		return common.Address{}, err

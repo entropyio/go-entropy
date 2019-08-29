@@ -17,10 +17,11 @@ import (
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/hexutil"
 	"github.com/entropyio/go-entropy/common/rlputil"
-	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/database/trie"
 	"github.com/entropyio/go-entropy/entropy/entropyapi"
 	"github.com/entropyio/go-entropy/rpc"
+	"runtime"
+	"time"
 )
 
 // PublicEntropyAPI provides an API to access Entropy full node-related
@@ -47,6 +48,15 @@ func (api *PublicEntropyAPI) Coinbase() (common.Address, error) {
 // Hashrate returns the POW hashrate
 func (api *PublicEntropyAPI) Hashrate() hexutil.Uint64 {
 	return hexutil.Uint64(api.e.Miner().HashRate())
+}
+
+// ChainId is the EIP-155 replay-protection chain id for the current ethereum chain config.
+func (api *PublicEntropyAPI) ChainId() hexutil.Uint64 {
+	chainID := new(big.Int)
+	if config := api.e.blockchain.Config(); config.IsEIP155(api.e.blockchain.CurrentBlock().Number()) {
+		chainID = config.ChainID
+	}
+	return (hexutil.Uint64)(chainID.Uint64())
 }
 
 // PublicMinerAPI provides an API to control the miner.
@@ -76,47 +86,22 @@ func NewPrivateMinerAPI(e *Entropy) *PrivateMinerAPI {
 	return &PrivateMinerAPI{e: e}
 }
 
-// Start the miner with the given number of threads. If threads is nil the number
-// of workers started is equal to the number of logical CPUs that are usable by
-// this process. If mining is already running, this method adjust the number of
-// threads allowed to use and updates the minimum price required by the transaction
-// pool.
+// Start starts the miner with the given number of threads. If threads is nil,
+// the number of workers started is equal to the number of logical CPUs that are
+// usable by this process. If mining is already running, this method adjust the
+// number of threads allowed to use and updates the minimum price required by the
+// transaction pool.
 func (api *PrivateMinerAPI) Start(threads *int) error {
-	// Set the number of threads if the seal engine supports it
 	if threads == nil {
-		threads = new(int)
-	} else if *threads == 0 {
-		*threads = -1 // Disable the miner from within
+		return api.e.StartMining(runtime.NumCPU())
 	}
-	type threaded interface {
-		SetThreads(threads int)
-	}
-	if th, ok := api.e.engine.(threaded); ok {
-		log.Info("Updated mining threads", "threads", *threads)
-		th.SetThreads(*threads)
-	}
-	// Start the miner and return
-	if !api.e.IsMining() {
-		// Propagate the initial price point to the transaction pool
-		api.e.lock.RLock()
-		price := api.e.gasPrice
-		api.e.lock.RUnlock()
-		api.e.txPool.SetGasPrice(price)
-		return api.e.StartMining(true)
-	}
-	return nil
+	return api.e.StartMining(*threads)
 }
 
-// Stop the miner
-func (api *PrivateMinerAPI) Stop() bool {
-	type threaded interface {
-		SetThreads(threads int)
-	}
-	if th, ok := api.e.engine.(threaded); ok {
-		th.SetThreads(-1)
-	}
+// Stop terminates the miner, both at the consensus engine level as well as at
+// the block creation level.
+func (api *PrivateMinerAPI) Stop() {
 	api.e.StopMining()
-	return true
 }
 
 // SetExtra sets the extra data string that is included when this miner mines a block.
@@ -143,21 +128,26 @@ func (api *PrivateMinerAPI) SetEntropyBase(entropyBase common.Address) bool {
 	return true
 }
 
-// GetHashRate returns the current hashRate of the miner.
-func (api *PrivateMinerAPI) GetHashRate() uint64 {
+// SetRecommitInterval updates the interval for miner sealing work recommitting.
+func (api *PrivateMinerAPI) SetRecommitInterval(interval int) {
+	api.e.Miner().SetRecommitInterval(time.Duration(interval) * time.Millisecond)
+}
+
+// GetHashrate returns the current hashrate of the miner.
+func (api *PrivateMinerAPI) GetHashrate() uint64 {
 	return api.e.miner.HashRate()
 }
 
 // PrivateAdminAPI is the collection of Entropy full node-related APIs
 // exposed over the private admin endpoint.
 type PrivateAdminAPI struct {
-	entropy *Entropy
+	eth *Entropy
 }
 
 // NewPrivateAdminAPI creates a new API definition for the full node private
 // admin methods of the Entropy service.
-func NewPrivateAdminAPI(entropy *Entropy) *PrivateAdminAPI {
-	return &PrivateAdminAPI{entropy: entropy}
+func NewPrivateAdminAPI(eth *Entropy) *PrivateAdminAPI {
+	return &PrivateAdminAPI{eth: eth}
 }
 
 // ExportChain exports the current blockchain into a local file.
@@ -176,7 +166,7 @@ func (api *PrivateAdminAPI) ExportChain(file string) (bool, error) {
 	}
 
 	// Export the blockchain
-	if err := api.entropy.BlockChain().Export(writer); err != nil {
+	if err := api.eth.BlockChain().Export(writer); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -228,12 +218,12 @@ func (api *PrivateAdminAPI) ImportChain(file string) (bool, error) {
 			break
 		}
 
-		if hasAllBlocks(api.entropy.BlockChain(), blocks) {
+		if hasAllBlocks(api.eth.BlockChain(), blocks) {
 			blocks = blocks[:0]
 			continue
 		}
 		// Import the batch and reset the buffer
-		if _, err := api.entropy.BlockChain().InsertChain(blocks); err != nil {
+		if _, err := api.eth.BlockChain().InsertChain(blocks); err != nil {
 			return false, fmt.Errorf("batch %d: failed to insert: %v", batch, err)
 		}
 		blocks = blocks[:0]
@@ -244,13 +234,13 @@ func (api *PrivateAdminAPI) ImportChain(file string) (bool, error) {
 // PublicDebugAPI is the collection of Entropy full node APIs exposed
 // over the public debugging endpoint.
 type PublicDebugAPI struct {
-	entropy *Entropy
+	eth *Entropy
 }
 
 // NewPublicDebugAPI creates a new API definition for the full node-
 // related public debug methods of the Entropy service.
-func NewPublicDebugAPI(entropy *Entropy) *PublicDebugAPI {
-	return &PublicDebugAPI{entropy: entropy}
+func NewPublicDebugAPI(eth *Entropy) *PublicDebugAPI {
+	return &PublicDebugAPI{eth: eth}
 }
 
 // DumpBlock retrieves the entire state of the database at a given block.
@@ -259,41 +249,40 @@ func (api *PublicDebugAPI) DumpBlock(blockNr rpc.BlockNumber) (state.Dump, error
 		// If we're dumping the pending state, we need to request
 		// both the pending block as well as the pending state from
 		// the miner and operate on those
-		_, stateDb := api.entropy.miner.Pending()
-		return stateDb.RawDump(), nil
+		_, stateDb := api.eth.miner.Pending()
+		return stateDb.RawDump(false, false, true), nil
 	}
 	var block *model.Block
 	if blockNr == rpc.LatestBlockNumber {
-		block = api.entropy.blockchain.CurrentBlock()
+		block = api.eth.blockchain.CurrentBlock()
 	} else {
-		block = api.entropy.blockchain.GetBlockByNumber(uint64(blockNr))
+		block = api.eth.blockchain.GetBlockByNumber(uint64(blockNr))
 	}
 	if block == nil {
 		return state.Dump{}, fmt.Errorf("block #%d not found", blockNr)
 	}
-	stateDb, err := api.entropy.BlockChain().StateAt(block.Root())
+	stateDb, err := api.eth.BlockChain().StateAt(block.Root())
 	if err != nil {
 		return state.Dump{}, err
 	}
-	return stateDb.RawDump(), nil
+	return stateDb.RawDump(false, false, true), nil
 }
 
 // PrivateDebugAPI is the collection of Entropy full node APIs exposed over
 // the private debugging endpoint.
 type PrivateDebugAPI struct {
-	config *config.ChainConfig
-	entropy    *Entropy
+	eth *Entropy
 }
 
 // NewPrivateDebugAPI creates a new API definition for the full node-related
 // private debug methods of the Entropy service.
-func NewPrivateDebugAPI(config *config.ChainConfig, entropy *Entropy) *PrivateDebugAPI {
-	return &PrivateDebugAPI{config: config, entropy: entropy}
+func NewPrivateDebugAPI(eth *Entropy) *PrivateDebugAPI {
+	return &PrivateDebugAPI{eth: eth}
 }
 
 // Preimage is a debug API function that returns the preimage for a sha3 hash, if known.
 func (api *PrivateDebugAPI) Preimage(ctx context.Context, hash common.Hash) (hexutil.Bytes, error) {
-	if preimage := mapper.ReadPreimage(api.entropy.ChainDb(), hash); preimage != nil {
+	if preimage := mapper.ReadPreimage(api.eth.ChainDb(), hash); preimage != nil {
 		return preimage, nil
 	}
 	return nil, errors.New("unknown preimage")
@@ -309,7 +298,7 @@ type BadBlockArgs struct {
 // GetBadBlocks returns a list of the last 'bad blocks' that the client has seen on the network
 // and returns them as a JSON list of block-hashes
 func (api *PrivateDebugAPI) GetBadBlocks(ctx context.Context) ([]*BadBlockArgs, error) {
-	blocks := api.entropy.BlockChain().BadBlocks()
+	blocks := api.eth.BlockChain().BadBlocks()
 	results := make([]*BadBlockArgs, len(blocks))
 
 	var err error
@@ -327,6 +316,72 @@ func (api *PrivateDebugAPI) GetBadBlocks(ctx context.Context) ([]*BadBlockArgs, 
 		}
 	}
 	return results, nil
+}
+
+// AccountRangeResult returns a mapping from the hash of an account addresses
+// to its preimage. It will return the JSON null if no preimage is found.
+// Since a query can return a limited amount of results, a "next" field is
+// also present for paging.
+type AccountRangeResult struct {
+	Accounts map[common.Hash]*common.Address `json:"accounts"`
+	Next     common.Hash                     `json:"next"`
+}
+
+func accountRange(st state.Trie, start *common.Hash, maxResults int) (AccountRangeResult, error) {
+	if start == nil {
+		start = &common.Hash{0}
+	}
+	it := trie.NewIterator(st.NodeIterator(start.Bytes()))
+	result := AccountRangeResult{Accounts: make(map[common.Hash]*common.Address), Next: common.Hash{}}
+
+	if maxResults > AccountRangeMaxResults {
+		maxResults = AccountRangeMaxResults
+	}
+
+	for i := 0; i < maxResults && it.Next(); i++ {
+		if preimage := st.GetKey(it.Key); preimage != nil {
+			addr := &common.Address{}
+			addr.SetBytes(preimage)
+			result.Accounts[common.BytesToHash(it.Key)] = addr
+		} else {
+			result.Accounts[common.BytesToHash(it.Key)] = nil
+		}
+	}
+
+	if it.Next() {
+		result.Next = common.BytesToHash(it.Key)
+	}
+
+	return result, nil
+}
+
+// AccountRangeMaxResults is the maximum number of results to be returned per call
+const AccountRangeMaxResults = 256
+
+// AccountRange enumerates all accounts in the latest state
+func (api *PrivateDebugAPI) AccountRange(ctx context.Context, start *common.Hash, maxResults int) (AccountRangeResult, error) {
+	var statedb *state.StateDB
+	var err error
+	block := api.eth.blockchain.CurrentBlock()
+
+	if len(block.Transactions()) == 0 {
+		statedb, err = api.computeStateDB(block, defaultTraceReexec)
+		if err != nil {
+			return AccountRangeResult{}, err
+		}
+	} else {
+		_, _, statedb, err = api.computeTxEnv(block.Hash(), len(block.Transactions())-1, 0)
+		if err != nil {
+			return AccountRangeResult{}, err
+		}
+	}
+
+	trie, err := statedb.Database().OpenTrie(block.Header().Root)
+	if err != nil {
+		return AccountRangeResult{}, err
+	}
+
+	return accountRange(trie, start, maxResults)
 }
 
 // StorageRangeResult is the result of a debug_storageRangeAt API call.
@@ -386,19 +441,19 @@ func storageRangeAt(st state.Trie, start []byte, maxResult int) (StorageRangeRes
 func (api *PrivateDebugAPI) GetModifiedAccountsByNumber(startNum uint64, endNum *uint64) ([]common.Address, error) {
 	var startBlock, endBlock *model.Block
 
-	startBlock = api.entropy.blockchain.GetBlockByNumber(startNum)
+	startBlock = api.eth.blockchain.GetBlockByNumber(startNum)
 	if startBlock == nil {
 		return nil, fmt.Errorf("start block %x not found", startNum)
 	}
 
 	if endNum == nil {
 		endBlock = startBlock
-		startBlock = api.entropy.blockchain.GetBlockByHash(startBlock.ParentHash())
+		startBlock = api.eth.blockchain.GetBlockByHash(startBlock.ParentHash())
 		if startBlock == nil {
 			return nil, fmt.Errorf("block %x has no parent", endBlock.Number())
 		}
 	} else {
-		endBlock = api.entropy.blockchain.GetBlockByNumber(*endNum)
+		endBlock = api.eth.blockchain.GetBlockByNumber(*endNum)
 		if endBlock == nil {
 			return nil, fmt.Errorf("end block %d not found", *endNum)
 		}
@@ -413,19 +468,19 @@ func (api *PrivateDebugAPI) GetModifiedAccountsByNumber(startNum uint64, endNum 
 // With one parameter, returns the list of account modified in the specified block.
 func (api *PrivateDebugAPI) GetModifiedAccountsByHash(startHash common.Hash, endHash *common.Hash) ([]common.Address, error) {
 	var startBlock, endBlock *model.Block
-	startBlock = api.entropy.blockchain.GetBlockByHash(startHash)
+	startBlock = api.eth.blockchain.GetBlockByHash(startHash)
 	if startBlock == nil {
 		return nil, fmt.Errorf("start block %x not found", startHash)
 	}
 
 	if endHash == nil {
 		endBlock = startBlock
-		startBlock = api.entropy.blockchain.GetBlockByHash(startBlock.ParentHash())
+		startBlock = api.eth.blockchain.GetBlockByHash(startBlock.ParentHash())
 		if startBlock == nil {
 			return nil, fmt.Errorf("block %x has no parent", endBlock.Number())
 		}
 	} else {
-		endBlock = api.entropy.blockchain.GetBlockByHash(*endHash)
+		endBlock = api.eth.blockchain.GetBlockByHash(*endHash)
 		if endBlock == nil {
 			return nil, fmt.Errorf("end block %x not found", *endHash)
 		}
@@ -437,16 +492,16 @@ func (api *PrivateDebugAPI) getModifiedAccounts(startBlock, endBlock *model.Bloc
 	if startBlock.Number().Uint64() >= endBlock.Number().Uint64() {
 		return nil, fmt.Errorf("start block height (%d) must be less than end block height (%d)", startBlock.Number().Uint64(), endBlock.Number().Uint64())
 	}
+	triedb := api.eth.BlockChain().StateCache().TrieDB()
 
-	oldTrie, err := trie.NewSecure(startBlock.Root(), trie.NewDatabase(api.entropy.chainDb), 0)
+	oldTrie, err := trie.NewSecure(startBlock.Root(), triedb)
 	if err != nil {
 		return nil, err
 	}
-	newTrie, err := trie.NewSecure(endBlock.Root(), trie.NewDatabase(api.entropy.chainDb), 0)
+	newTrie, err := trie.NewSecure(endBlock.Root(), triedb)
 	if err != nil {
 		return nil, err
 	}
-
 	diff, _ := trie.NewDifferenceIterator(oldTrie.NodeIterator([]byte{}), newTrie.NodeIterator([]byte{}))
 	iter := trie.NewIterator(diff)
 

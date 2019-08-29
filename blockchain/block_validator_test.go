@@ -6,10 +6,10 @@ import (
 	"time"
 
 	"github.com/entropyio/go-entropy/blockchain/genesis"
+	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus/ethash"
-	"github.com/entropyio/go-entropy/database"
 	"github.com/entropyio/go-entropy/evm"
 )
 
@@ -17,7 +17,7 @@ import (
 func TestHeaderVerification(t *testing.T) {
 	// Create a simple chain to verify
 	var (
-		testdb     = database.NewMemDatabase()
+		testdb     = mapper.NewMemoryDatabase()
 		gspec      = &genesis.Genesis{Config: config.TestChainConfig}
 		genesisObj = gspec.MustCommit(testdb)
 		blocks, _  = GenerateChain(config.TestChainConfig, genesisObj, ethash.NewFaker(), testdb, 8, nil)
@@ -27,7 +27,7 @@ func TestHeaderVerification(t *testing.T) {
 		headers[i] = block.Header()
 	}
 	// Run the header checker for blocks one-by-one, checking for both valid and invalid nonces
-	chain, _ := NewBlockChain(testdb, nil, config.TestChainConfig, ethash.NewFaker(), evm.Config{})
+	chain, _ := NewBlockChain(testdb, nil, config.TestChainConfig, ethash.NewFaker(), evm.Config{}, nil)
 	defer chain.Stop()
 
 	for i := 0; i < len(blocks); i++ {
@@ -69,7 +69,7 @@ func TestHeaderConcurrentVerification32(t *testing.T) { testHeaderConcurrentVeri
 func testHeaderConcurrentVerification(t *testing.T, threads int) {
 	// Create a simple chain to verify
 	var (
-		testdb     = database.NewMemDatabase()
+		testdb     = mapper.NewMemoryDatabase()
 		gspec      = &genesis.Genesis{Config: config.TestChainConfig}
 		genesisObj = gspec.MustCommit(testdb)
 		blocks, _  = GenerateChain(config.TestChainConfig, genesisObj, ethash.NewFaker(), testdb, 8, nil)
@@ -91,11 +91,11 @@ func testHeaderConcurrentVerification(t *testing.T, threads int) {
 		var results <-chan error
 
 		if valid {
-			chain, _ := NewBlockChain(testdb, nil, config.TestChainConfig, ethash.NewFaker(), evm.Config{})
+			chain, _ := NewBlockChain(testdb, nil, config.TestChainConfig, ethash.NewFaker(), evm.Config{}, nil)
 			_, results = chain.engine.VerifyHeaders(chain, headers, seals)
 			chain.Stop()
 		} else {
-			chain, _ := NewBlockChain(testdb, nil, config.TestChainConfig, ethash.NewFakeFailer(uint64(len(headers)-1)), evm.Config{})
+			chain, _ := NewBlockChain(testdb, nil, config.TestChainConfig, ethash.NewFakeFailer(uint64(len(headers)-1)), evm.Config{}, nil)
 			_, results = chain.engine.VerifyHeaders(chain, headers, seals)
 			chain.Stop()
 		}
@@ -141,7 +141,7 @@ func TestHeaderConcurrentAbortion32(t *testing.T) { testHeaderConcurrentAbortion
 func testHeaderConcurrentAbortion(t *testing.T, threads int) {
 	// Create a simple chain to verify
 	var (
-		testdb     = database.NewMemDatabase()
+		testdb     = mapper.NewMemoryDatabase()
 		gspec      = &genesis.Genesis{Config: config.TestChainConfig}
 		genesisObj = gspec.MustCommit(testdb)
 		blocks, _  = GenerateChain(config.TestChainConfig, genesisObj, ethash.NewFaker(), testdb, 1024, nil)
@@ -158,7 +158,7 @@ func testHeaderConcurrentAbortion(t *testing.T, threads int) {
 	defer runtime.GOMAXPROCS(old)
 
 	// Start the verifications and immediately abort
-	chain, _ := NewBlockChain(testdb, nil, config.TestChainConfig, ethash.NewFakeDelayer(time.Millisecond), evm.Config{})
+	chain, _ := NewBlockChain(testdb, nil, config.TestChainConfig, ethash.NewFakeDelayer(time.Millisecond), evm.Config{}, nil)
 	defer chain.Stop()
 
 	abort, results := chain.engine.VerifyHeaders(chain, headers, seals)

@@ -12,7 +12,7 @@ var (
 	errUnreferencedData = errors.New("extra bytes on input")
 
 	// errExceededTarget is returned from decompression if the bitset header has
-	// more bits defined than the number of target buffer entropy available.
+	// more bits defined than the number of target buffer space available.
 	errExceededTarget = errors.New("target data size exceeded")
 
 	// errZeroContent is returned from decompression if a data byte referenced in

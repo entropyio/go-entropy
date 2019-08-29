@@ -77,7 +77,6 @@ func TestFeed(t *testing.T) {
 			if v != 1 {
 				t.Errorf("%d: received value %d, want 1", i, v)
 			}
-			fmt.Println("%d: received value %d, want 1", i, v)
 		case <-timeout.C:
 			t.Errorf("%d: receive timeout", i)
 		}
@@ -93,22 +92,19 @@ func TestFeed(t *testing.T) {
 		}
 	}
 
-	const n = 3
+	const n = 1000
 	done.Add(n)
 	subscribed.Add(n)
 	for i := 0; i < n; i++ {
 		go subscriber(i)
 	}
 	subscribed.Wait()
-	var nsent int
-	if nsent = feed.Send(1); nsent != n {
+	if nsent := feed.Send(1); nsent != n {
 		t.Errorf("first send delivered %d times, want %d", nsent, n)
 	}
-	fmt.Println("first send delivered %d times", n)
-	if nsent = feed.Send(2); nsent != 0 {
+	if nsent := feed.Send(2); nsent != 0 {
 		t.Errorf("second send delivered %d times, want 0", nsent)
 	}
-	fmt.Println("first send delivered %d times", nsent)
 	done.Wait()
 }
 

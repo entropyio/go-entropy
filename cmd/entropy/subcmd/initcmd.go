@@ -19,7 +19,6 @@ var (
 		ArgsUsage: "<genesisPath>",
 		Flags: []cli.Flag{
 			utils.DataDirFlag,
-			utils.LightModeFlag,
 		},
 		Category: "BLOCKCHAIN COMMANDS",
 		Description: `
@@ -52,8 +51,9 @@ func initGenesis(ctx *cli.Context) error {
 
 	// Open an initialise both full and light databases
 	stack := utils.MakeFullNode(ctx)
+	defer stack.Close()
 	for _, name := range []string{"chaindata", "lightchaindata"} {
-		chaindb, err := stack.OpenDatabase(name, 0, 0)
+		chaindb, err := stack.OpenDatabase(name, 0, 0, "")
 
 		if err != nil {
 			utils.Fatalf("Failed to open database: %v", err)
@@ -62,6 +62,7 @@ func initGenesis(ctx *cli.Context) error {
 		if err != nil {
 			utils.Fatalf("Failed to write genesis block: %v", err)
 		}
+		chaindb.Close()
 		initLogger.Info("Successfully wrote genesis state", "database", name, "hash", hash)
 	}
 

@@ -1,10 +1,12 @@
-package node
+package node_test
 
 import (
 	"fmt"
 
 	"github.com/entropyio/go-entropy/rpc"
+	"github.com/entropyio/go-entropy/server/node"
 	"github.com/entropyio/go-entropy/server/p2p"
+	"log"
 )
 
 // SampleService is a trivial network service that can be attached to a node for
@@ -24,15 +26,17 @@ func (s *SampleService) Stop() error               { fmt.Println("Service stoppi
 
 func ExampleService() {
 	// Create a network node to run protocols with the default values.
-	stack, err := New(&Config{})
+	stack, err := node.New(&node.Config{})
 	if err != nil {
 		log.Fatalf("Failed to create network node: %v", err)
 	}
+	defer stack.Close()
+
 	// Create and register a simple network service. This is done through the definition
 	// of a node.ServiceConstructor that will instantiate a node.Service. The reason for
 	// the factory method approach is to support service restarts without relying on the
 	// individual implementations' support for such operations.
-	constructor := func(context *ServiceContext) (Service, error) {
+	constructor := func(context *node.ServiceContext) (node.Service, error) {
 		return new(SampleService), nil
 	}
 	if err := stack.Register(constructor); err != nil {

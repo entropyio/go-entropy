@@ -103,7 +103,7 @@ func isProtectedV(V *big.Int) bool {
 		v := V.Uint64()
 		return v != 27 && v != 28
 	}
-	// anything not 27 or 28 are considered unprotected
+	// anything not 27 or 28 is considered protected
 	return true
 }
 
@@ -123,7 +123,7 @@ func (tx *Transaction) DecodeRLP(s *rlputil.Stream) error {
 	return err
 }
 
-// MarshalJSON encodes the entropy3 RPC transaction format.
+// MarshalJSON encodes the web3 RPC transaction format.
 func (tx *Transaction) MarshalJSON() ([]byte, error) {
 	hash := tx.Hash()
 	data := tx.data
@@ -131,22 +131,27 @@ func (tx *Transaction) MarshalJSON() ([]byte, error) {
 	return data.MarshalJSON()
 }
 
-// UnmarshalJSON decodes the entropy3 RPC transaction format.
+// UnmarshalJSON decodes the web3 RPC transaction format.
 func (tx *Transaction) UnmarshalJSON(input []byte) error {
 	var dec txdata
 	if err := dec.UnmarshalJSON(input); err != nil {
 		return err
 	}
-	var V byte
-	if isProtectedV(dec.V) {
-		chainID := deriveChainId(dec.V).Uint64()
-		V = byte(dec.V.Uint64() - 35 - 2*chainID)
-	} else {
-		V = byte(dec.V.Uint64() - 27)
+
+	withSignature := dec.V.Sign() != 0 || dec.R.Sign() != 0 || dec.S.Sign() != 0
+	if withSignature {
+		var V byte
+		if isProtectedV(dec.V) {
+			chainID := deriveChainId(dec.V).Uint64()
+			V = byte(dec.V.Uint64() - 35 - 2*chainID)
+		} else {
+			V = byte(dec.V.Uint64() - 27)
+		}
+		if !crypto.ValidateSignatureValues(V, dec.R, dec.S, false) {
+			return ErrInvalidSig
+		}
 	}
-	if !crypto.ValidateSignatureValues(V, dec.R, dec.S, false) {
-		return ErrInvalidSig
-	}
+
 	*tx = Transaction{data: dec}
 	return nil
 }
@@ -214,7 +219,7 @@ func (tx *Transaction) AsMessage(s Signer) (Message, error) {
 }
 
 // WithSignature returns a new transaction with the given signature.
-// This signature needs to be formatted as described in the yellow paper (v+27).
+// This signature needs to be in the [R || S || V] format where V is 0 or 1.
 func (tx *Transaction) WithSignature(signer Signer, sig []byte) (*Transaction, error) {
 	r, s, v, err := signer.SignatureValues(tx, sig)
 	if err != nil {
@@ -232,7 +237,9 @@ func (tx *Transaction) Cost() *big.Int {
 	return total
 }
 
-func (tx *Transaction) RawSignatureValues() (*big.Int, *big.Int, *big.Int) {
+// RawSignatureValues returns the V, R, S signature values of the transaction.
+// The return values should not be modified by the caller.
+func (tx *Transaction) RawSignatureValues() (v, r, s *big.Int) {
 	return tx.data.V, tx.data.R, tx.data.S
 }
 
@@ -251,9 +258,9 @@ func (s Transactions) GetRlp(i int) []byte {
 	return enc
 }
 
-// TxDifference returns a new set t which is the difference between a to b.
-func TxDifference(a, b Transactions) (keep Transactions) {
-	keep = make(Transactions, 0, len(a))
+// TxDifference returns a new set which is the difference between a and b.
+func TxDifference(a, b Transactions) Transactions {
+	keep := make(Transactions, 0, len(a))
 
 	remove := make(map[common.Hash]struct{})
 	for _, tx := range b {
@@ -300,7 +307,7 @@ func (s *TxByPrice) Pop() interface{} {
 
 // TransactionsByPriceAndNonce represents a set of transactions that can return
 // transactions in a profit-maximizing sorted order, while supporting removing
-// entire batches of transactions for non-executable account.
+// entire batches of transactions for non-executable accounts.
 type TransactionsByPriceAndNonce struct {
 	txs    map[common.Address]Transactions // Per account nonce-sorted list of transactions
 	heads  TxByPrice                       // Next transaction for each unique account (price heap)

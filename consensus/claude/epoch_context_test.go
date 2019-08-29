@@ -6,10 +6,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/database"
 	"github.com/entropyio/go-entropy/database/trie"
 	"github.com/stretchr/testify/assert"
 )
@@ -30,8 +30,8 @@ func TestEpochContextCountVotes(t *testing.T) {
 		},
 		common.HexToAddress("0x9d9667c71bb09d6ca7c3ed12bfe5e7be24e2ffe1"): {},
 	}
-	balance := int64(5)
-	db := database.NewMemDatabase()
+	balance := uint64(5)
+	db := mapper.NewMemoryDatabase()
 	stateDB, _ := state.New(common.Hash{}, state.NewDatabase(db))
 	claudeContext, err := model.NewClaudeContext(*trie.NewDatabase(db))
 	assert.Nil(t, err)
@@ -46,7 +46,7 @@ func TestEpochContextCountVotes(t *testing.T) {
 	for candidate, electors := range voteMap {
 		assert.Nil(t, claudeContext.BecomeCandidate(candidate))
 		for _, elector := range electors {
-			stateDB.SetBalance(elector, big.NewInt(balance))
+			stateDB.SetBalance(elector, big.NewInt((int64)(balance)))
 			assert.Nil(t, claudeContext.Delegate(elector, candidate))
 		}
 	}
@@ -56,12 +56,12 @@ func TestEpochContextCountVotes(t *testing.T) {
 	for candidate, electors := range voteMap {
 		voteCount, ok := result[candidate]
 		assert.True(t, ok)
-		assert.Equal(t, balance*int64(len(electors)), voteCount.Int64())
+		assert.Equal(t, balance*uint64(len(electors)), voteCount.Uint64())
 	}
 }
 
 func TestLookupValidator(t *testing.T) {
-	db := *trie.NewDatabase(database.NewMemDatabase())
+	db := *trie.NewDatabase(mapper.NewMemoryDatabase())
 	claudeContext, _ := model.NewClaudeContext(db)
 	mockEpochContext := &EpochContext{
 		ClaudeContext: claudeContext,
@@ -73,7 +73,7 @@ func TestLookupValidator(t *testing.T) {
 	}
 	mockEpochContext.ClaudeContext.SetValidators(validators)
 	for i, expected := range validators {
-		got, _ := mockEpochContext.lookupValidator(int64(i) * blockInterval)
+		got, _ := mockEpochContext.lookupValidator(uint64(i) * blockInterval)
 		if got != expected {
 			t.Errorf("Failed to test lookup validator, %s was expected but got %s", expected, got)
 		}
@@ -85,7 +85,7 @@ func TestLookupValidator(t *testing.T) {
 }
 
 func TestEpochContextKickoutValidator(t *testing.T) {
-	db := database.NewMemDatabase()
+	db := mapper.NewMemoryDatabase()
 	stateDB, _ := state.New(common.Hash{}, state.NewDatabase(db))
 	claudeContext, err := model.NewClaudeContext(*trie.NewDatabase(db))
 	assert.Nil(t, err)
@@ -95,7 +95,7 @@ func TestEpochContextKickoutValidator(t *testing.T) {
 		statedb:       stateDB,
 	}
 	atLeastMintCnt := epochInterval / blockInterval / maxValidatorSize / 2
-	testEpoch := int64(1)
+	testEpoch := uint64(1)
 
 	// no validator can be kickout, because all validators mint enough block at least
 	validators := []common.Address{}
@@ -124,7 +124,7 @@ func TestEpochContextKickoutValidator(t *testing.T) {
 		validator := common.BytesToAddress([]byte("addr" + strconv.Itoa(i)))
 		validators = append(validators, validator)
 		assert.Nil(t, claudeContext.BecomeCandidate(validator))
-		setTestMintCnt(claudeContext, testEpoch, validator, atLeastMintCnt-int64(i)-1)
+		setTestMintCnt(claudeContext, testEpoch, validator, atLeastMintCnt-uint64(i)-1)
 	}
 	assert.Nil(t, claudeContext.SetValidators(validators))
 	assert.Nil(t, epochContext.kickoutValidator(testEpoch))
@@ -244,8 +244,8 @@ func TestEpochContextKickoutValidator(t *testing.T) {
 	assert.NotNil(t, epochContext.kickoutValidator(testEpoch))
 }
 
-func setTestMintCnt(claudeContext *model.ClaudeContext, epoch int64, validator common.Address, count int64) {
-	for i := int64(0); i < count; i++ {
+func setTestMintCnt(claudeContext *model.ClaudeContext, epoch uint64, validator common.Address, count uint64) {
+	for i := uint64(0); i < count; i++ {
 		updateMintCnt(epoch*epochInterval, epoch*epochInterval+blockInterval, validator, claudeContext)
 	}
 }
@@ -260,7 +260,7 @@ func getCandidates(candidateTrie *trie.Trie) map[common.Address]bool {
 }
 
 func TestEpochContextTryElect(t *testing.T) {
-	db := database.NewMemDatabase()
+	db := mapper.NewMemoryDatabase()
 	stateDB, _ := state.New(common.Hash{}, state.NewDatabase(db))
 	claudeContext, err := model.NewClaudeContext(*trie.NewDatabase(db))
 	assert.Nil(t, err)
@@ -270,7 +270,7 @@ func TestEpochContextTryElect(t *testing.T) {
 		statedb:       stateDB,
 	}
 	atLeastMintCnt := epochInterval / blockInterval / maxValidatorSize / 2
-	testEpoch := int64(1)
+	testEpoch := uint64(1)
 	validators := []common.Address{}
 	for i := 0; i < maxValidatorSize; i++ {
 		validator := common.BytesToAddress([]byte("addr" + strconv.Itoa(i)))
@@ -285,11 +285,11 @@ func TestEpochContextTryElect(t *testing.T) {
 
 	// genesisEpoch == parentEpoch do not kickout
 	genesis := &model.Header{
-		Time:          big.NewInt(0),
+		Time:          uint64(0),
 		ClaudeCtxHash: &model.ClaudeContextHash{},
 	}
 	parent := &model.Header{
-		Time:          big.NewInt(epochInterval - blockInterval),
+		Time:          uint64(epochInterval - blockInterval),
 		ClaudeCtxHash: &model.ClaudeContextHash{},
 	}
 	oldHash := claudeContext.EpochTrie().Hash()
@@ -304,12 +304,12 @@ func TestEpochContextTryElect(t *testing.T) {
 
 	// genesisEpoch != parentEpoch and have none mintCnt do not kickout
 	genesis = &model.Header{
-		Time:          big.NewInt(-epochInterval),
+		Time:          uint64(epochInterval),
 		ClaudeCtxHash: &model.ClaudeContextHash{},
 	}
 	parent = &model.Header{
 		Difficulty:    big.NewInt(1),
-		Time:          big.NewInt(epochInterval - blockInterval),
+		Time:          uint64(epochInterval - blockInterval),
 		ClaudeCtxHash: &model.ClaudeContextHash{},
 	}
 	epochContext.TimeStamp = epochInterval
@@ -325,11 +325,11 @@ func TestEpochContextTryElect(t *testing.T) {
 
 	// genesisEpoch != parentEpoch kickout
 	genesis = &model.Header{
-		Time:          big.NewInt(0),
+		Time:          uint64(0),
 		ClaudeCtxHash: &model.ClaudeContextHash{},
 	}
 	parent = &model.Header{
-		Time:          big.NewInt(epochInterval*2 - blockInterval),
+		Time:          uint64(epochInterval*2 - blockInterval),
 		ClaudeCtxHash: &model.ClaudeContextHash{},
 	}
 	epochContext.TimeStamp = epochInterval * 2
@@ -349,11 +349,11 @@ func TestEpochContextTryElect(t *testing.T) {
 
 	// parentEpoch == currentEpoch do not elect
 	genesis = &model.Header{
-		Time:          big.NewInt(0),
+		Time:          uint64(0),
 		ClaudeCtxHash: &model.ClaudeContextHash{},
 	}
 	parent = &model.Header{
-		Time:          big.NewInt(epochInterval),
+		Time:          uint64(epochInterval),
 		ClaudeCtxHash: &model.ClaudeContextHash{},
 	}
 	epochContext.TimeStamp = epochInterval + blockInterval

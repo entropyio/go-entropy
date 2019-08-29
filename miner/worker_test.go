@@ -7,6 +7,7 @@ import (
 
 	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/blockchain/genesis"
+	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
@@ -32,12 +33,17 @@ var (
 	testBankAddress = crypto.PubkeyToAddress(testBankKey.PublicKey)
 	testBankFunds   = big.NewInt(1000000000000000000)
 
-	acc1Key, _ = crypto.GenerateKey()
-	acc1Addr   = crypto.PubkeyToAddress(acc1Key.PublicKey)
+	testUserKey, _  = crypto.GenerateKey()
+	testUserAddress = crypto.PubkeyToAddress(testUserKey.PublicKey)
 
 	// Test transactions
 	pendingTxs []*model.Transaction
 	newTxs     []*model.Transaction
+	testConfig = &Config{
+		Recommit: time.Second,
+		GasFloor: config.GenesisGasLimit,
+		GasCeil:  config.GenesisGasLimit,
+	}
 )
 
 func init() {
@@ -52,19 +58,13 @@ func init() {
 		Period: 10,
 		Epoch:  30000,
 	}
-
-	validators := []common.Address{
-		common.HexToAddress("0x44d1ce0b7cb3588bca96151fe1bc05af38f91b6e"),
-		common.HexToAddress("0xa60a3886b552ff9992cfcd208ec1152079e046c2"),
-		common.HexToAddress("0x4e080e49f62694554871e669aeb4ebe17c4a9670"),
-	}
 	claudeChainConfig.Claude = &config.ClaudeConfig{
-		Validators: validators,
+		Validators: []common.Address{},
 	}
 
-	tx1, _ := model.SignTx(model.NewTransaction(0, acc1Addr, big.NewInt(1000), config.TxGas, nil, nil), model.HomesteadSigner{}, testBankKey)
+	tx1, _ := model.SignTx(model.NewTransaction(0, testUserAddress, big.NewInt(1000), config.TxGas, nil, nil), model.HomesteadSigner{}, testBankKey)
 	pendingTxs = append(pendingTxs, tx1)
-	tx2, _ := model.SignTx(model.NewTransaction(1, acc1Addr, big.NewInt(1000), config.TxGas, nil, nil), model.HomesteadSigner{}, testBankKey)
+	tx2, _ := model.SignTx(model.NewTransaction(1, testUserAddress, big.NewInt(1000), config.TxGas, nil, nil), model.HomesteadSigner{}, testBankKey)
 	newTxs = append(newTxs, tx2)
 }
 
@@ -77,9 +77,9 @@ type testWorkerBackend struct {
 	uncleBlock *model.Block
 }
 
-func newTestWorkerBackend(t *testing.T, chainConfig *config.ChainConfig, engine consensus.Engine) *testWorkerBackend {
+func newTestWorkerBackend(t *testing.T, chainConfig *config.ChainConfig, engine consensus.Engine, n int) *testWorkerBackend {
 	var (
-		db    = database.NewMemDatabase()
+		db    = mapper.NewMemoryDatabase()
 		gspec = genesis.Genesis{
 			Config: chainConfig,
 			Alloc:  genesis.GenesisAlloc{testBankAddress: {Balance: testBankFunds}},
@@ -93,14 +93,27 @@ func newTestWorkerBackend(t *testing.T, chainConfig *config.ChainConfig, engine 
 	case *ethash.Ethash:
 	case *claude.Claude:
 	default:
-		t.Fatal("unexpect consensus engine type")
+		t.Fatalf("unexpected consensus engine type: %T", engine)
 	}
 	genesisObj := gspec.MustCommit(db)
 
-	chain, _ := blockchain.NewBlockChain(db, nil, gspec.Config, engine, evm.Config{})
+	chain, _ := blockchain.NewBlockChain(db, nil, gspec.Config, engine, evm.Config{}, nil)
 	txpool := blockchain.NewTxPool(testTxPoolConfig, chainConfig, chain)
-	blocks, _ := blockchain.GenerateChain(chainConfig, genesisObj, engine, db, 1, func(i int, gen *blockchain.BlockGen) {
-		gen.SetCoinbase(acc1Addr)
+	// Generate a small n-block chain and an uncle block for it
+	if n > 0 {
+		blocks, _ := blockchain.GenerateChain(chainConfig, genesisObj, engine, db, n, func(i int, gen *blockchain.BlockGen) {
+			gen.SetCoinbase(testBankAddress)
+		})
+		if _, err := chain.InsertChain(blocks); err != nil {
+			t.Fatalf("failed to insert origin chain: %v", err)
+		}
+	}
+	parent := genesisObj
+	if n > 0 {
+		parent = chain.GetBlockByHash(chain.CurrentBlock().ParentHash())
+	}
+	blocks, _ := blockchain.GenerateChain(chainConfig, parent, engine, db, 1, func(i int, gen *blockchain.BlockGen) {
+		gen.SetCoinbase(testUserAddress)
 	})
 
 	return &testWorkerBackend{
@@ -117,10 +130,10 @@ func (b *testWorkerBackend) PostChainEvents(events []interface{}) {
 	b.chain.PostChainEvents(events, nil)
 }
 
-func newTestWorker(t *testing.T, chainConfig *config.ChainConfig, engine consensus.Engine) (*worker, *testWorkerBackend) {
-	backend := newTestWorkerBackend(t, chainConfig, engine)
+func newTestWorker(t *testing.T, chainConfig *config.ChainConfig, engine consensus.Engine, blocks int) (*worker, *testWorkerBackend) {
+	backend := newTestWorkerBackend(t, chainConfig, engine, blocks)
 	backend.txPool.AddLocals(pendingTxs)
-	w := newWorker(chainConfig, engine, backend, new(event.TypeMux))
+	w := newWorker(testConfig, chainConfig, engine, backend, new(event.TypeMux), nil)
 	w.setEntropyBase(testBankAddress)
 	return w, backend
 }
@@ -130,30 +143,30 @@ func TestPendingStateAndBlockEthash(t *testing.T) {
 }
 
 func TestPendingStateAndBlockClique(t *testing.T) {
-	testPendingStateAndBlock(t, cliqueChainConfig, clique.New(cliqueChainConfig.Clique, database.NewMemDatabase()))
+	testPendingStateAndBlock(t, cliqueChainConfig, clique.New(cliqueChainConfig.Clique, mapper.NewMemoryDatabase()))
 }
 
 func testPendingStateAndBlock(t *testing.T, chainConfig *config.ChainConfig, engine consensus.Engine) {
 	defer engine.Close()
 
-	w, b := newTestWorker(t, chainConfig, engine)
+	w, b := newTestWorker(t, chainConfig, engine, 0)
 	defer w.close()
 
 	// Ensure snapshot has been updated.
 	time.Sleep(100 * time.Millisecond)
 	block, state := w.pending()
 	if block.NumberU64() != 1 {
-		t.Errorf("block number mismatch, has %d, want %d", block.NumberU64(), 1)
+		t.Errorf("block number mismatch: have %d, want %d", block.NumberU64(), 1)
 	}
-	if balance := state.GetBalance(acc1Addr); balance.Cmp(big.NewInt(1000)) != 0 {
-		t.Errorf("account balance mismatch, has %d, want %d", balance, 1000)
+	if balance := state.GetBalance(testUserAddress); balance.Cmp(big.NewInt(1000)) != 0 {
+		t.Errorf("account balance mismatch: have %d, want %d", balance, 1000)
 	}
 	b.txPool.AddLocals(newTxs)
 	// Ensure the new tx events has been processed
 	time.Sleep(100 * time.Millisecond)
 	block, state = w.pending()
-	if balance := state.GetBalance(acc1Addr); balance.Cmp(big.NewInt(2000)) != 0 {
-		t.Errorf("account balance mismatch, has %d, want %d", balance, 2000)
+	if balance := state.GetBalance(testUserAddress); balance.Cmp(big.NewInt(2000)) != 0 {
+		t.Errorf("account balance mismatch: have %d, want %d", balance, 2000)
 	}
 }
 
@@ -162,17 +175,13 @@ func TestEmptyWorkEthash(t *testing.T) {
 }
 
 func TestEmptyWorkClique(t *testing.T) {
-	testEmptyWork(t, cliqueChainConfig, clique.New(cliqueChainConfig.Clique, database.NewMemDatabase()))
-}
-
-func TestEmptyWorkClaude(t *testing.T) {
-	testEmptyWork(t, claudeChainConfig, claude.New(cliqueChainConfig.Claude, database.NewMemDatabase()))
+	testEmptyWork(t, cliqueChainConfig, clique.New(cliqueChainConfig.Clique, mapper.NewMemoryDatabase()))
 }
 
 func testEmptyWork(t *testing.T, chainConfig *config.ChainConfig, engine consensus.Engine) {
 	defer engine.Close()
 
-	w, _ := newTestWorker(t, chainConfig, engine)
+	w, _ := newTestWorker(t, chainConfig, engine, 0)
 	defer w.close()
 
 	var (
@@ -186,10 +195,10 @@ func testEmptyWork(t *testing.T, chainConfig *config.ChainConfig, engine consens
 			receiptLen, balance = 1, big.NewInt(1000)
 		}
 		if len(task.receipts) != receiptLen {
-			t.Errorf("receipt number mismatch has %d, want %d", len(task.receipts), receiptLen)
+			t.Errorf("receipt number mismatch: have %d, want %d", len(task.receipts), receiptLen)
 		}
-		if task.state.GetBalance(acc1Addr).Cmp(balance) != 0 {
-			t.Errorf("account balance mismatch has %d, want %d", task.state.GetBalance(acc1Addr), balance)
+		if task.state.GetBalance(testUserAddress).Cmp(balance) != 0 {
+			t.Errorf("account balance mismatch: have %d, want %d", task.state.GetBalance(testUserAddress), balance)
 		}
 	}
 
@@ -216,7 +225,7 @@ func testEmptyWork(t *testing.T, chainConfig *config.ChainConfig, engine consens
 	for i := 0; i < 2; i += 1 {
 		select {
 		case <-taskCh:
-		case <-time.NewTimer(time.Second).C:
+		case <-time.NewTimer(2 * time.Second).C:
 			t.Error("new task timeout")
 		}
 	}
@@ -226,19 +235,19 @@ func TestStreamUncleBlock(t *testing.T) {
 	consensus := ethash.NewFaker()
 	defer consensus.Close()
 
-	w, b := newTestWorker(t, ethashChainConfig, consensus)
+	w, b := newTestWorker(t, ethashChainConfig, consensus, 1)
 	defer w.close()
 
 	var taskCh = make(chan struct{})
 
 	taskIndex := 0
 	w.newTaskHook = func(task *task) {
-		if task.block.NumberU64() == 1 {
+		if task.block.NumberU64() == 2 {
 			if taskIndex == 2 {
-				has := task.block.Header().UncleHash
+				have := task.block.Header().UncleHash
 				want := model.CalcUncleHash([]*model.Header{b.uncleBlock.Header()})
-				if has != want {
-					t.Errorf("uncle hash mismatch, has %s, want %s", has.Hex(), want.Hex())
+				if have != want {
+					t.Errorf("uncle hash mismatch: have %s, want %s", have.Hex(), want.Hex())
 				}
 			}
 			taskCh <- struct{}{}
@@ -252,6 +261,70 @@ func TestStreamUncleBlock(t *testing.T) {
 		time.Sleep(100 * time.Millisecond)
 	}
 
+	// Ensure worker has finished initialization
+	for {
+		b := w.pendingBlock()
+		if b != nil && b.NumberU64() == 2 {
+			break
+		}
+	}
+	w.start()
+
+	// Ignore the first two works
+	for i := 0; i < 2; i += 1 {
+		select {
+		case <-taskCh:
+		case <-time.NewTimer(time.Second).C:
+			t.Error("new task timeout")
+		}
+	}
+	b.PostChainEvents([]interface{}{blockchain.ChainSideEvent{Block: b.uncleBlock}})
+
+	select {
+	case <-taskCh:
+	case <-time.NewTimer(time.Second).C:
+		t.Error("new task timeout")
+	}
+}
+
+func TestRegenerateMiningBlockEthash(t *testing.T) {
+	testRegenerateMiningBlock(t, ethashChainConfig, ethash.NewFaker())
+}
+
+func TestRegenerateMiningBlockClique(t *testing.T) {
+	testRegenerateMiningBlock(t, cliqueChainConfig, clique.New(cliqueChainConfig.Clique, mapper.NewMemoryDatabase()))
+}
+
+func testRegenerateMiningBlock(t *testing.T, chainConfig *config.ChainConfig, engine consensus.Engine) {
+	defer engine.Close()
+
+	w, b := newTestWorker(t, chainConfig, engine, 0)
+	defer w.close()
+
+	var taskCh = make(chan struct{})
+
+	taskIndex := 0
+	w.newTaskHook = func(task *task) {
+		if task.block.NumberU64() == 1 {
+			if taskIndex == 2 {
+				receiptLen, balance := 2, big.NewInt(2000)
+				if len(task.receipts) != receiptLen {
+					t.Errorf("receipt number mismatch: have %d, want %d", len(task.receipts), receiptLen)
+				}
+				if task.state.GetBalance(testUserAddress).Cmp(balance) != 0 {
+					t.Errorf("account balance mismatch: have %d, want %d", task.state.GetBalance(testUserAddress), balance)
+				}
+			}
+			taskCh <- struct{}{}
+			taskIndex += 1
+		}
+	}
+	w.skipSealHook = func(task *task) bool {
+		return true
+	}
+	w.fullTaskHook = func() {
+		time.Sleep(100 * time.Millisecond)
+	}
 	// Ensure worker has finished initialization
 	for {
 		b := w.pendingBlock()
@@ -269,11 +342,114 @@ func TestStreamUncleBlock(t *testing.T) {
 			t.Error("new task timeout")
 		}
 	}
-	b.PostChainEvents([]interface{}{blockchain.ChainSideEvent{Block: b.uncleBlock}})
+	b.txPool.AddLocals(newTxs)
+	time.Sleep(time.Second)
 
 	select {
 	case <-taskCh:
 	case <-time.NewTimer(time.Second).C:
 		t.Error("new task timeout")
+	}
+}
+
+func TestAdjustIntervalEthash(t *testing.T) {
+	testAdjustInterval(t, ethashChainConfig, ethash.NewFaker())
+}
+
+func TestAdjustIntervalClique(t *testing.T) {
+	testAdjustInterval(t, cliqueChainConfig, clique.New(cliqueChainConfig.Clique, mapper.NewMemoryDatabase()))
+}
+
+func testAdjustInterval(t *testing.T, chainConfig *config.ChainConfig, engine consensus.Engine) {
+	defer engine.Close()
+
+	w, _ := newTestWorker(t, chainConfig, engine, 0)
+	defer w.close()
+
+	w.skipSealHook = func(task *task) bool {
+		return true
+	}
+	w.fullTaskHook = func() {
+		time.Sleep(100 * time.Millisecond)
+	}
+	var (
+		progress = make(chan struct{}, 10)
+		result   = make([]float64, 0, 10)
+		index    = 0
+		start    = false
+	)
+	w.resubmitHook = func(minInterval time.Duration, recommitInterval time.Duration) {
+		// Short circuit if interval checking hasn't started.
+		if !start {
+			return
+		}
+		var wantMinInterval, wantRecommitInterval time.Duration
+
+		switch index {
+		case 0:
+			wantMinInterval, wantRecommitInterval = 3*time.Second, 3*time.Second
+		case 1:
+			origin := float64(3 * time.Second.Nanoseconds())
+			estimate := origin*(1-intervalAdjustRatio) + intervalAdjustRatio*(origin/0.8+intervalAdjustBias)
+			wantMinInterval, wantRecommitInterval = 3*time.Second, time.Duration(estimate)*time.Nanosecond
+		case 2:
+			estimate := result[index-1]
+			min := float64(3 * time.Second.Nanoseconds())
+			estimate = estimate*(1-intervalAdjustRatio) + intervalAdjustRatio*(min-intervalAdjustBias)
+			wantMinInterval, wantRecommitInterval = 3*time.Second, time.Duration(estimate)*time.Nanosecond
+		case 3:
+			wantMinInterval, wantRecommitInterval = time.Second, time.Second
+		}
+
+		// Check interval
+		if minInterval != wantMinInterval {
+			t.Errorf("resubmit min interval mismatch: have %v, want %v ", minInterval, wantMinInterval)
+		}
+		if recommitInterval != wantRecommitInterval {
+			t.Errorf("resubmit interval mismatch: have %v, want %v", recommitInterval, wantRecommitInterval)
+		}
+		result = append(result, float64(recommitInterval.Nanoseconds()))
+		index += 1
+		progress <- struct{}{}
+	}
+	// Ensure worker has finished initialization
+	for {
+		b := w.pendingBlock()
+		if b != nil && b.NumberU64() == 1 {
+			break
+		}
+	}
+
+	w.start()
+
+	time.Sleep(time.Second)
+
+	start = true
+	w.setRecommitInterval(3 * time.Second)
+	select {
+	case <-progress:
+	case <-time.NewTimer(time.Second).C:
+		t.Error("interval reset timeout")
+	}
+
+	w.resubmitAdjustCh <- &intervalAdjust{inc: true, ratio: 0.8}
+	select {
+	case <-progress:
+	case <-time.NewTimer(time.Second).C:
+		t.Error("interval reset timeout")
+	}
+
+	w.resubmitAdjustCh <- &intervalAdjust{inc: false}
+	select {
+	case <-progress:
+	case <-time.NewTimer(time.Second).C:
+		t.Error("interval reset timeout")
+	}
+
+	w.setRecommitInterval(500 * time.Millisecond)
+	select {
+	case <-progress:
+	case <-time.NewTimer(time.Second).C:
+		t.Error("interval reset timeout")
 	}
 }

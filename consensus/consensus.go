@@ -63,15 +63,30 @@ type Engine interface {
 	Prepare(chain ChainReader, header *model.Header) error
 
 	// Finalize runs any post-transaction state modifications (e.g. block rewards)
-	// and assembles the final block.
+	// but does not assemble the block.
+	//
 	// Note: The block header and state database might be updated to reflect any
 	// consensus rules that happen at finalization (e.g. block rewards).
 	Finalize(chain ChainReader, header *model.Header, state *state.StateDB, txs []*model.Transaction,
+		uncles []*model.Header)
+
+	// FinalizeAndAssemble runs any post-transaction state modifications (e.g. block
+	// rewards) and assembles the final block.
+	//
+	// Note: The block header and state database might be updated to reflect any
+	// consensus rules that happen at finalization (e.g. block rewards).
+	FinalizeAndAssemble(chain ChainReader, header *model.Header, state *state.StateDB, txs []*model.Transaction,
 		uncles []*model.Header, receipts []*model.Receipt, claudeContext *model.ClaudeContext) (*model.Block, error)
 
-	// Seal generates a new block for the given input block with the local miner's
-	// seal place on top.
-	Seal(chain ChainReader, block *model.Block, stop <-chan struct{}) (*model.Block, error)
+	// Seal generates a new sealing request for the given input block and pushes
+	// the result into the given channel.
+	//
+	// Note, the method returns immediately and will send the result async. More
+	// than one result may also be returned depending on the consensus algorithm.
+	Seal(chain ChainReader, block *model.Block, results chan<- *model.Block, stop <-chan struct{}) error
+
+	// SealHash returns the hash of a block prior to it being sealed.
+	SealHash(header *model.Header) common.Hash
 
 	// CalcDifficulty is the difficulty adjustment algorithm. It returns the difficulty
 	// that a new block should have.

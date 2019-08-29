@@ -125,7 +125,7 @@ func (p *FakePeer) RequestBodies(hashes []common.Hash) error {
 func (p *FakePeer) RequestReceipts(hashes []common.Hash) error {
 	var receipts [][]*model.Receipt
 	for _, hash := range hashes {
-		receipts = append(receipts, mapper.ReadReceipts(p.db, hash, *p.hc.GetBlockNumber(hash)))
+		receipts = append(receipts, mapper.ReadRawReceipts(p.db, hash, *p.hc.GetBlockNumber(hash)))
 	}
 	p.dl.DeliverReceipts(p.id, receipts)
 	return nil

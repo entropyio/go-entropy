@@ -4,6 +4,7 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/config"
 )
@@ -26,13 +27,14 @@ func (d *dummyContractRef) SetNonce(uint64)            {}
 func (d *dummyContractRef) Balance() *big.Int          { return new(big.Int) }
 
 type dummyStateDB struct {
-	NoopStateDB
-	ref *dummyContractRef
+	state.StateDB
 }
+
+func (*dummyStateDB) GetRefund() uint64 { return 1337 }
 
 func TestStoreCapture(t *testing.T) {
 	var (
-		env      = NewEVM(Context{}, nil, config.TestChainConfig, Config{})
+		env      = NewEVM(Context{}, &dummyStateDB{}, config.TestChainConfig, Config{})
 		logger   = NewStructLogger(nil)
 		mem      = NewMemory()
 		stack    = newstack()

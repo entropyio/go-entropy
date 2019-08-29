@@ -17,15 +17,15 @@ import (
 
 const (
 	ClientIdentifier = "entropy"
+	GitCommit        = "gitCommit-12345678"
+	GitDate          = ""
 )
-
-var GitCommit = "gitCommit-12345678"
 
 var (
 	NodeFlags = []cli.Flag{
 		// data dir
 		DataDirFlag,
-		LightModeFlag,
+		AncientFlag,
 		GCModeFlag,
 
 		// dashboard
@@ -37,6 +37,8 @@ var (
 
 	RpcFlags = []cli.Flag{
 		RPCEnabledFlag,
+		RPCCORSDomainFlag,
+		RPCVirtualHostsFlag,
 		RPCListenAddrFlag,
 		RPCPortFlag,
 		RPCApiFlag,
@@ -104,7 +106,7 @@ func LoadConfig(file string, cfg *EntropyConfig) error {
 func DefaultNodeConfig() node.Config {
 	cfg := node.DefaultConfig
 	cfg.Name = ClientIdentifier
-	cfg.Version = config.VersionWithCommit(GitCommit)
+	cfg.Version = config.VersionWithCommit(GitCommit, GitDate)
 	cfg.HTTPModules = append(cfg.HTTPModules, "entropy", "shh")
 	cfg.WSModules = append(cfg.WSModules, "entropy", "shh")
 	cfg.IPCPath = "entropy.ipc"

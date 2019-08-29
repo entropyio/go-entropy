@@ -12,31 +12,6 @@ import (
 	"strings"
 )
 
-var versionRegexp = regexp.MustCompile(`([0-9]+)\.([0-9]+)\.([0-9]+)`)
-
-// Contract contains information about a compiled contract, alongside its code.
-type Contract struct {
-	Code string       `json:"code"`
-	Info ContractInfo `json:"info"`
-}
-
-// ContractInfo contains information about a compiled contract, including access
-// to the ABI definition, user and developer docs, and metadata.
-//
-// Depending on the source, language version, compiler version, and compiler
-// options will provide information about how the contract was compiled.
-type ContractInfo struct {
-	Source          string      `json:"source"`
-	Language        string      `json:"language"`
-	LanguageVersion string      `json:"languageVersion"`
-	CompilerVersion string      `json:"compilerVersion"`
-	CompilerOptions string      `json:"compilerOptions"`
-	AbiDefinition   interface{} `json:"abiDefinition"`
-	UserDoc         interface{} `json:"userDoc"`
-	DeveloperDoc    interface{} `json:"developerDoc"`
-	Metadata        string      `json:"metadata"`
-}
-
 // Solidity contains information about the solidity compiler.
 type Solidity struct {
 	Path, Version, FullVersion string
@@ -46,18 +21,21 @@ type Solidity struct {
 // --combined-output format
 type solcOutput struct {
 	Contracts map[string]struct {
-		Bin, Abi, Devdoc, Userdoc, Metadata string
+		BinRuntime                                  string `json:"bin-runtime"`
+		SrcMapRuntime                               string `json:"srcmap-runtime"`
+		Bin, SrcMap, Abi, Devdoc, Userdoc, Metadata string
+		Hashes                                      map[string]string
 	}
 	Version string
 }
 
 func (s *Solidity) makeArgs() []string {
 	p := []string{
-		"--combined-json", "bin,abi,userdoc,devdoc",
+		"--combined-json", "bin,bin-runtime,srcmap,srcmap-runtime,abi,userdoc,devdoc",
 		"--optimize", // code optimizer switched on
 	}
 	if s.Major > 0 || s.Minor > 4 || s.Patch > 6 {
-		p[1] += ",metadata"
+		p[1] += ",metadata,hashes"
 	}
 	return p
 }
@@ -140,7 +118,7 @@ func (s *Solidity) run(cmd *exec.Cmd, source string) (map[string]*Contract, erro
 // provided source, language and compiler version, and compiler options are all
 // passed through into the Contract structs.
 //
-// The solc output is expected to contain ABI, user docs, and dev docs.
+// The solc output is expected to contain ABI, source mapping, user docs, and dev docs.
 //
 // Returns an error if the JSON is malformed or missing data, or if the JSON
 // embedded within the JSON is malformed.
@@ -158,22 +136,22 @@ func ParseCombinedJSON(combinedJSON []byte, source string, languageVersion strin
 		if err := json.Unmarshal([]byte(info.Abi), &abi); err != nil {
 			return nil, fmt.Errorf("solc: error reading abi definition (%v)", err)
 		}
-		var userdoc interface{}
-		if err := json.Unmarshal([]byte(info.Userdoc), &userdoc); err != nil {
-			return nil, fmt.Errorf("solc: error reading user doc: %v", err)
-		}
-		var devdoc interface{}
-		if err := json.Unmarshal([]byte(info.Devdoc), &devdoc); err != nil {
-			return nil, fmt.Errorf("solc: error reading dev doc: %v", err)
-		}
+		var userdoc, devdoc interface{}
+		json.Unmarshal([]byte(info.Userdoc), &userdoc)
+		json.Unmarshal([]byte(info.Devdoc), &devdoc)
+
 		contracts[name] = &Contract{
-			Code: "0x" + info.Bin,
+			Code:        "0x" + info.Bin,
+			RuntimeCode: "0x" + info.BinRuntime,
+			Hashes:      info.Hashes,
 			Info: ContractInfo{
 				Source:          source,
 				Language:        "Solidity",
 				LanguageVersion: languageVersion,
 				CompilerVersion: compilerVersion,
 				CompilerOptions: compilerOptions,
+				SrcMap:          info.SrcMap,
+				SrcMapRuntime:   info.SrcMapRuntime,
 				AbiDefinition:   abi,
 				UserDoc:         userdoc,
 				DeveloperDoc:    devdoc,
@@ -182,16 +160,4 @@ func ParseCombinedJSON(combinedJSON []byte, source string, languageVersion strin
 		}
 	}
 	return contracts, nil
-}
-
-func slurpFiles(files []string) (string, error) {
-	var concat bytes.Buffer
-	for _, file := range files {
-		content, err := ioutil.ReadFile(file)
-		if err != nil {
-			return "", err
-		}
-		concat.Write(content)
-	}
-	return concat.String(), nil
 }

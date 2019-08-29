@@ -40,6 +40,7 @@ const (
 )
 
 const (
+
 	// txChanSize is the size of channel listening to NewTxsEvent.
 	// The number is referenced from the size of tx pool.
 	txChanSize = 4096
@@ -478,7 +479,7 @@ func (es *EventSystem) eventLoop() {
 			}
 			close(f.err)
 
-			// System stopped
+		// System stopped
 		case <-es.txsSub.Err():
 			return
 		case <-es.logsSub.Err():

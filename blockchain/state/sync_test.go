@@ -5,9 +5,11 @@ import (
 	"math/big"
 	"testing"
 
+	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/database"
+	"github.com/entropyio/go-entropy/database/memorydb"
 	"github.com/entropyio/go-entropy/database/trie"
 )
 
@@ -22,7 +24,7 @@ type testAccount struct {
 // makeTestState create a sample test state to test node-wise reconstruction.
 func makeTestState() (StateDatabase, common.Hash, []*testAccount) {
 	// Create an empty state
-	db := NewDatabase(database.NewMemDatabase())
+	db := NewDatabase(mapper.NewMemoryDatabase())
 	state, _ := New(common.Hash{}, db)
 
 	// Fill it with some arbitrary data
@@ -108,7 +110,7 @@ func checkStateConsistency(db database.Database, root common.Hash) error {
 // Tests that an empty state is not scheduled for syncing.
 func TestEmptyStateSync(t *testing.T) {
 	empty := common.HexToHash("56e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421")
-	if req := NewStateSync(empty, database.NewMemDatabase()).Missing(1); len(req) != 0 {
+	if req := NewStateSync(empty, mapper.NewMemoryDatabase(), trie.NewSyncBloom(1, memorydb.New())).Missing(1); len(req) != 0 {
 		t.Errorf("content requested for empty state: %v", req)
 	}
 }
@@ -123,8 +125,8 @@ func testIterativeStateSync(t *testing.T, batch int) {
 	srcDb, srcRoot, srcAccounts := makeTestState()
 
 	// Create a destination state and sync with the scheduler
-	dstDb := database.NewMemDatabase()
-	sched := NewStateSync(srcRoot, dstDb)
+	dstDb := mapper.NewMemoryDatabase()
+	sched := NewStateSync(srcRoot, dstDb, trie.NewSyncBloom(1, dstDb))
 
 	queue := append([]common.Hash{}, sched.Missing(batch)...)
 	for len(queue) > 0 {
@@ -155,8 +157,8 @@ func TestIterativeDelayedStateSync(t *testing.T) {
 	srcDb, srcRoot, srcAccounts := makeTestState()
 
 	// Create a destination state and sync with the scheduler
-	dstDb := database.NewMemDatabase()
-	sched := NewStateSync(srcRoot, dstDb)
+	dstDb := mapper.NewMemoryDatabase()
+	sched := NewStateSync(srcRoot, dstDb, trie.NewSyncBloom(1, dstDb))
 
 	queue := append([]common.Hash{}, sched.Missing(0)...)
 	for len(queue) > 0 {
@@ -192,8 +194,8 @@ func testIterativeRandomStateSync(t *testing.T, batch int) {
 	srcDb, srcRoot, srcAccounts := makeTestState()
 
 	// Create a destination state and sync with the scheduler
-	dstDb := database.NewMemDatabase()
-	sched := NewStateSync(srcRoot, dstDb)
+	dstDb := mapper.NewMemoryDatabase()
+	sched := NewStateSync(srcRoot, dstDb, trie.NewSyncBloom(1, dstDb))
 
 	queue := make(map[common.Hash]struct{})
 	for _, hash := range sched.Missing(batch) {
@@ -232,8 +234,8 @@ func TestIterativeRandomDelayedStateSync(t *testing.T) {
 	srcDb, srcRoot, srcAccounts := makeTestState()
 
 	// Create a destination state and sync with the scheduler
-	dstDb := database.NewMemDatabase()
-	sched := NewStateSync(srcRoot, dstDb)
+	dstDb := mapper.NewMemoryDatabase()
+	sched := NewStateSync(srcRoot, dstDb, trie.NewSyncBloom(1, dstDb))
 
 	queue := make(map[common.Hash]struct{})
 	for _, hash := range sched.Missing(0) {
@@ -279,8 +281,8 @@ func TestIncompleteStateSync(t *testing.T) {
 	checkTrieConsistency(srcDb.TrieDB().DiskDB().(database.Database), srcRoot)
 
 	// Create a destination state and sync with the scheduler
-	dstDb := database.NewMemDatabase()
-	sched := NewStateSync(srcRoot, dstDb)
+	dstDb := mapper.NewMemoryDatabase()
+	sched := NewStateSync(srcRoot, dstDb, trie.NewSyncBloom(1, dstDb))
 
 	added := []common.Hash{}
 	queue := append([]common.Hash{}, sched.Missing(1)...)

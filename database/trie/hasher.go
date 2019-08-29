@@ -3,18 +3,16 @@ package trie
 import (
 	"github.com/entropyio/go-entropy/common"
 
-	"github.com/entropyio/go-entropy/common/crypto/sha3"
 	"github.com/entropyio/go-entropy/common/rlputil"
+	"golang.org/x/crypto/sha3"
 	"hash"
 	"sync"
 )
 
 type hasher struct {
-	tmp        sliceBuffer
-	sha        keccakState
-	cachegen   uint16
-	cachelimit uint16
-	onleaf     LeafCallback
+	tmp    sliceBuffer
+	sha    keccakState
+	onleaf LeafCallback
 }
 
 // keccakState wraps sha3.state. In addition to the usual hash methods, it also supports
@@ -41,14 +39,14 @@ var hasherPool = sync.Pool{
 	New: func() interface{} {
 		return &hasher{
 			tmp: make(sliceBuffer, 0, 550), // cap is as large as a full fullNode.
-			sha: sha3.NewKeccak256().(keccakState),
+			sha: sha3.NewLegacyKeccak256().(keccakState),
 		}
 	},
 }
 
-func newHasher(cachegen, cachelimit uint16, onleaf LeafCallback) *hasher {
+func newHasher(onleaf LeafCallback) *hasher {
 	h := hasherPool.Get().(*hasher)
-	h.cachegen, h.cachelimit, h.onleaf = cachegen, cachelimit, onleaf
+	h.onleaf = onleaf
 	return h
 }
 
@@ -64,14 +62,13 @@ func (h *hasher) hash(n node, db *TrieDatabase, force bool) (node, node, error) 
 		if db == nil {
 			return hashObj, n, nil
 		}
-		if n.canUnload(h.cachegen, h.cachelimit) {
-			// Unload the node from cache. All of its subnodes will have a lower or equal
-			// cache generation number.
-			cacheUnloadCounter.Inc(1)
-			return hashObj, hashObj, nil
-		}
 		if !dirty {
-			return hashObj, n, nil
+			switch n.(type) {
+			case *fullNode, *shortNode:
+				return hashObj, hashObj, nil
+			default:
+				return hashObj, n, nil
+			}
 		}
 	}
 	// Trie not processed yet or needs storage, walk the children

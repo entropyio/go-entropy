@@ -16,9 +16,14 @@ import (
 	"github.com/entropyio/go-entropy/common/hexutil"
 	"github.com/entropyio/go-entropy/common/mathutil"
 	"github.com/entropyio/go-entropy/common/rlputil"
-	"github.com/entropyio/go-entropy/database"
+
 	"github.com/entropyio/go-entropy/evm"
-	"github.com/entropyio/go-entropy/tests"
+
+	"crypto/ecdsa"
+	"crypto/rand"
+	"github.com/entropyio/go-entropy/blockchain/mapper"
+	"github.com/entropyio/go-entropy/common/crypto"
+	"github.com/entropyio/go-entropy/config"
 )
 
 // To generate a new callTracer test, copy paste the makeTest method below into
@@ -101,6 +106,85 @@ type callTracerTest struct {
 	Result  *callTrace       `json:"result"`
 }
 
+func TestPrestateTracerCreate2(t *testing.T) {
+	unsignedTx := model.NewTransaction(1, common.HexToAddress("0x00000000000000000000000000000000deadbeef"),
+		new(big.Int), 5000000, big.NewInt(1), []byte{})
+
+	privateKeyECDSA, err := ecdsa.GenerateKey(crypto.S256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("err %v", err)
+	}
+	signer := model.NewEIP155Signer(big.NewInt(1))
+	tx, err := model.SignTx(unsignedTx, signer, privateKeyECDSA)
+	if err != nil {
+		t.Fatalf("err %v", err)
+	}
+	/**
+		This comes from one of the test-vectors on the Skinny Create2 - EIP
+
+	    address 0x00000000000000000000000000000000deadbeef
+	    salt 0x00000000000000000000000000000000000000000000000000000000cafebabe
+	    init_code 0xdeadbeef
+	    gas (assuming no mem expansion): 32006
+	    result: 0x60f3f640a8508fC6a86d45DF051962668E1e8AC7
+	*/
+	origin, _ := signer.Sender(tx)
+	context := evm.Context{
+		CanTransfer: blockchain.CanTransfer,
+		Transfer:    blockchain.Transfer,
+		Origin:      origin,
+		Coinbase:    common.Address{},
+		BlockNumber: new(big.Int).SetUint64(8000000),
+		Time:        new(big.Int).SetUint64(5),
+		Difficulty:  big.NewInt(0x30000),
+		GasLimit:    uint64(6000000),
+		GasPrice:    big.NewInt(1),
+	}
+	alloc := genesis.GenesisAlloc{}
+
+	// The code pushes 'deadbeef' into memory, then the other params, and calls CREATE2, then returns
+	// the address
+	alloc[common.HexToAddress("0x00000000000000000000000000000000deadbeef")] = genesis.GenesisAccount{
+		Nonce:   1,
+		Code:    hexutil.MustDecode("0x63deadbeef60005263cafebabe6004601c6000F560005260206000F3"),
+		Balance: big.NewInt(1),
+	}
+	alloc[origin] = genesis.GenesisAccount{
+		Nonce:   1,
+		Code:    []byte{},
+		Balance: big.NewInt(500000000000000),
+	}
+	statedb := tests.MakePreState(mapper.NewMemoryDatabase(), alloc)
+
+	// Create the tracer, the EVM environment and run it
+	tracer, err := New("prestateTracer")
+	if err != nil {
+		t.Fatalf("failed to create call tracer: %v", err)
+	}
+	evm := evm.NewEVM(context, statedb, config.MainnetChainConfig, evm.Config{Debug: true, Tracer: tracer})
+
+	msg, err := tx.AsMessage(signer)
+	if err != nil {
+		t.Fatalf("failed to prepare transaction for tracing: %v", err)
+	}
+	st := blockchain.NewStateTransition(evm, msg, new(blockchain.GasPool).AddGas(tx.Gas()))
+	if _, _, _, err = st.TransitionDb(); err != nil {
+		t.Fatalf("failed to execute transaction: %v", err)
+	}
+	// Retrieve the trace result and compare against the etalon
+	res, err := tracer.GetResult()
+	if err != nil {
+		t.Fatalf("failed to retrieve trace result: %v", err)
+	}
+	ret := make(map[string]interface{})
+	if err := json.Unmarshal(res, &ret); err != nil {
+		t.Fatalf("failed to unmarshal trace result: %v", err)
+	}
+	if _, has := ret["0x60f3f640a8508fc6a86d45df051962668e1e8ac7"]; !has {
+		t.Fatalf("Expected 0x60f3f640a8508fc6a86d45df051962668e1e8ac7 in result")
+	}
+}
+
 // Iterates over all the input-output datasets in the tracer test harness and
 // runs the JavaScript tracers against them.
 func TestCallTracer(t *testing.T) {
@@ -144,7 +228,7 @@ func TestCallTracer(t *testing.T) {
 				GasLimit:    uint64(test.Context.GasLimit),
 				GasPrice:    tx.GasPrice(),
 			}
-			statedb := tests.MakePreState(database.NewMemDatabase(), test.Genesis.Alloc)
+			statedb := tests.MakePreState(mapper.NewMemoryDatabase(), test.Genesis.Alloc)
 
 			// Create the tracer, the EVM environment and run it
 			tracer, err := New("callTracer")
@@ -170,8 +254,9 @@ func TestCallTracer(t *testing.T) {
 			if err := json.Unmarshal(res, ret); err != nil {
 				t.Fatalf("failed to unmarshal trace result: %v", err)
 			}
+
 			if !reflect.DeepEqual(ret, test.Result) {
-				t.Fatalf("trace mismatch: have %+v, want %+v", ret, test.Result)
+				t.Fatalf("trace mismatch: \nhave %+v\nwant %+v", ret, test.Result)
 			}
 		})
 	}

@@ -6,9 +6,9 @@ import (
 	"fmt"
 
 	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/common/crypto/sha3"
 	"github.com/entropyio/go-entropy/common/rlputil"
 	"github.com/entropyio/go-entropy/database/trie"
+	"golang.org/x/crypto/sha3"
 )
 
 // claude dpos context tire
@@ -31,23 +31,23 @@ var (
 )
 
 func NewEpochTrie(root common.Hash, db trie.TrieDatabase) (*trie.Trie, error) {
-	return trie.NewTrieWithPrefix(root, epochPrefix, &db)
+	return trie.New(root, &db)
 }
 
 func NewDelegateTrie(root common.Hash, db trie.TrieDatabase) (*trie.Trie, error) {
-	return trie.NewTrieWithPrefix(root, delegatePrefix, &db)
+	return trie.New(root, &db)
 }
 
 func NewVoteTrie(root common.Hash, db trie.TrieDatabase) (*trie.Trie, error) {
-	return trie.NewTrieWithPrefix(root, votePrefix, &db)
+	return trie.New(root, &db)
 }
 
 func NewCandidateTrie(root common.Hash, db trie.TrieDatabase) (*trie.Trie, error) {
-	return trie.NewTrieWithPrefix(root, candidatePrefix, &db)
+	return trie.New(root, &db)
 }
 
 func NewMintCntTrie(root common.Hash, db trie.TrieDatabase) (*trie.Trie, error) {
-	return trie.NewTrieWithPrefix(root, mintCntPrefix, &db)
+	return trie.New(root, &db)
 }
 
 func NewClaudeContext(db trie.TrieDatabase) (*ClaudeContext, error) {
@@ -128,7 +128,7 @@ func (cc *ClaudeContext) Copy() *ClaudeContext {
 }
 
 func (cc *ClaudeContext) Root() (h common.Hash) {
-	hw := sha3.NewKeccak256()
+	hw := sha3.NewLegacyKeccak256()
 	rlputil.Encode(hw, cc.epochTrie.Hash())
 	rlputil.Encode(hw, cc.delegateTrie.Hash())
 	rlputil.Encode(hw, cc.candidateTrie.Hash())
@@ -191,7 +191,7 @@ func (cc *ClaudeContext) ToHash() *ClaudeContextHash {
 }
 
 func (ccp *ClaudeContextHash) Root() (h common.Hash) {
-	hw := sha3.NewKeccak256()
+	hw := sha3.NewLegacyKeccak256()
 	rlputil.Encode(hw, ccp.EpochHash)
 	rlputil.Encode(hw, ccp.DelegateHash)
 	rlputil.Encode(hw, ccp.CandidateHash)

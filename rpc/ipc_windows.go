@@ -4,6 +4,7 @@ package rpc
 
 import (
 	"context"
+	"gopkg.in/natefinch/npipe.v2"
 	"net"
 	"time"
 )

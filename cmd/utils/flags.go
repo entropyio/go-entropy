@@ -7,30 +7,37 @@ import (
 	"github.com/entropyio/go-entropy/account/keystore"
 	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/blockchain/genesis"
-	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/common/fdlimit"
 	"github.com/entropyio/go-entropy/common/netutil"
 	"github.com/entropyio/go-entropy/config"
+	"github.com/entropyio/go-entropy/consensus"
+	"github.com/entropyio/go-entropy/consensus/clique"
+	"github.com/entropyio/go-entropy/consensus/ethash"
 	"github.com/entropyio/go-entropy/dashboard"
+	"github.com/entropyio/go-entropy/database"
 	"github.com/entropyio/go-entropy/entropy"
 	"github.com/entropyio/go-entropy/entropy/downloader"
 	"github.com/entropyio/go-entropy/entropy/gasprice"
 	"github.com/entropyio/go-entropy/entropy/stats"
+	"github.com/entropyio/go-entropy/evm"
 	"github.com/entropyio/go-entropy/logger"
 	"github.com/entropyio/go-entropy/metrics"
+	"github.com/entropyio/go-entropy/metrics/influxdb"
+	"github.com/entropyio/go-entropy/miner"
 	"github.com/entropyio/go-entropy/server/node"
 	"github.com/entropyio/go-entropy/server/p2p"
-	"github.com/entropyio/go-entropy/server/p2p/discover"
+	"github.com/entropyio/go-entropy/server/p2p/discv5"
+	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"github.com/entropyio/go-entropy/server/p2p/nat"
 	"gopkg.in/urfave/cli.v1"
 	"io/ioutil"
 	"math/big"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
+	"time"
 )
 
 var log = logger.NewLogger("[utils]")
@@ -65,31 +72,24 @@ GLOBAL OPTIONS:
 	cli.CommandHelpTemplate = CommandHelpTemplate
 }
 
-func NewApp(gitCommit, usage string) *cli.App {
+func NewApp(gitCommit, gitDate, usage string) *cli.App {
 	app := cli.NewApp()
 	app.Name = "Entropy"
 	app.Author = "Eric"
 	app.Email = "starwz@gmail.com"
 	app.Version = "1.0.0"
-
-	if len(gitCommit) >= 8 {
-		app.Version += "-" + gitCommit[:8]
-	}
+	app.Version = config.VersionWithCommit(gitCommit, gitDate)
 
 	app.Usage = usage
 	return app
 }
 
-func MigrateFlags(action func(ctx *cli.Context) error) func(ctx *cli.Context) error {
-	return func(ctx *cli.Context) error {
-		for _, name := range ctx.FlagNames() {
-			if ctx.IsSet(name) {
-				ctx.GlobalSet(name, ctx.String(name))
-			}
-		}
-		return action(ctx)
-	}
-}
+// These are all the command line flags we support.
+// If you add to this list, please remember to include the
+// flag in the appropriate command definition.
+//
+// The flags are defined here so their names and help texts
+// are the same for all commands.
 
 var (
 	// General settings
@@ -97,6 +97,10 @@ var (
 		Name:  "datadir",
 		Usage: "Data directory for the databases and keystore",
 		Value: DirectoryString{node.DefaultDataDir()},
+	}
+	AncientFlag = DirectoryFlag{
+		Name:  "datadir.ancient",
+		Usage: "Data directory for ancient chain segments (default = inside chaindata)",
 	}
 	KeyStoreDirFlag = DirectoryFlag{
 		Name:  "keystore",
@@ -119,6 +123,14 @@ var (
 		Name:  "rinkeby",
 		Usage: "Rinkeby network: pre-configured proof-of-authority test network",
 	}
+	GoerliFlag = cli.BoolFlag{
+		Name:  "goerli",
+		Usage: "Görli network: pre-configured proof-of-authority test network",
+	}
+	ConstantinopleOverrideFlag = cli.Uint64Flag{
+		Name:  "override.constantinople",
+		Usage: "Manually specify constantinople fork-block, overriding the bundled setting",
+	}
 	DeveloperFlag = cli.BoolFlag{
 		Name:  "dev",
 		Usage: "Ephemeral proof-of-authority network with a pre-funded developer account, mining enabled",
@@ -136,13 +148,25 @@ var (
 		Usage: "Document Root for HTTPClient file scheme",
 		Value: DirectoryString{homeDir()},
 	}
-	FastSyncFlag = cli.BoolFlag{
-		Name:  "fast",
-		Usage: "Enable fast syncing through state downloads (replaced by --syncmode)",
+	ExitWhenSyncedFlag = cli.BoolFlag{
+		Name:  "exitwhensynced",
+		Usage: "Exits after block synchronisation completes",
 	}
-	LightModeFlag = cli.BoolFlag{
-		Name:  "light",
-		Usage: "Enable light client mode (replaced by --syncmode)",
+	ULCModeConfigFlag = cli.StringFlag{
+		Name:  "ulc.config",
+		Usage: "Config file to use for ultra light client mode",
+	}
+	OnlyAnnounceModeFlag = cli.BoolFlag{
+		Name:  "ulc.onlyannounce",
+		Usage: "ULC server sends announcements only",
+	}
+	ULCMinTrustedFractionFlag = cli.IntFlag{
+		Name:  "ulc.fraction",
+		Usage: "Minimum % of trusted ULC servers required to announce a new head",
+	}
+	ULCTrustedNodesFlag = cli.StringFlag{
+		Name:  "ulc.trusted",
+		Usage: "List of trusted ULC servers",
 	}
 	defaultSyncMode = entropy.DefaultConfig.SyncMode
 	SyncModeFlag    = TextMarshalerFlag{
@@ -155,20 +179,61 @@ var (
 		Usage: `Blockchain garbage collection mode ("full", "archive")`,
 		Value: "full",
 	}
-	LightServFlag = cli.IntFlag{
-		Name:  "lightserv",
-		Usage: "Maximum percentage of time allowed for serving LES requests (0-90)",
-		Value: 0,
-	}
-	LightPeersFlag = cli.IntFlag{
-		Name:  "lightpeers",
-		Usage: "Maximum number of LES client peers",
-		Value: entropy.DefaultConfig.LightPeers,
-	}
 	LightKDFFlag = cli.BoolFlag{
 		Name:  "lightkdf",
 		Usage: "Reduce key-derivation RAM & CPU usage at some expense of KDF strength",
 	}
+	WhitelistFlag = cli.StringFlag{
+		Name:  "whitelist",
+		Usage: "Comma separated block number-to-hash mappings to enforce (<number>=<hash>)",
+	}
+
+	// Light server and client settings
+	LightLegacyServFlag = cli.IntFlag{ // Deprecated in favor of light.serve, remove in 2021
+		Name:  "lightserv",
+		Usage: "Maximum percentage of time allowed for serving LES requests (deprecated, use --light.serve)",
+		Value: entropy.DefaultConfig.LightServ,
+	}
+	LightServeFlag = cli.IntFlag{
+		Name:  "light.serve",
+		Usage: "Maximum percentage of time allowed for serving LES requests (multi-threaded processing allows values over 100)",
+		Value: entropy.DefaultConfig.LightServ,
+	}
+	LightIngressFlag = cli.IntFlag{
+		Name:  "light.ingress",
+		Usage: "Incoming bandwidth limit for serving light clients (kilobytes/sec, 0 = unlimited)",
+		Value: entropy.DefaultConfig.LightIngress,
+	}
+	LightEgressFlag = cli.IntFlag{
+		Name:  "light.egress",
+		Usage: "Outgoing bandwidth limit for serving light clients (kilobytes/sec, 0 = unlimited)",
+		Value: entropy.DefaultConfig.LightEgress,
+	}
+	LightLegacyPeersFlag = cli.IntFlag{ // Deprecated in favor of light.maxpeers, remove in 2021
+		Name:  "lightpeers",
+		Usage: "Maximum number of light clients to serve, or light servers to attach to  (deprecated, use --light.maxpeers)",
+		Value: entropy.DefaultConfig.LightPeers,
+	}
+	LightMaxPeersFlag = cli.IntFlag{
+		Name:  "light.maxpeers",
+		Usage: "Maximum number of light clients to serve, or light servers to attach to",
+		Value: entropy.DefaultConfig.LightPeers,
+	}
+	UltraLightServersFlag = cli.StringFlag{
+		Name:  "ulc.servers",
+		Usage: "List of trusted ultra-light servers",
+		Value: strings.Join(entropy.DefaultConfig.UltraLightServers, ","),
+	}
+	UltraLightFractionFlag = cli.IntFlag{
+		Name:  "ulc.fraction",
+		Usage: "Minimum % of trusted ultra-light servers required to announce a new head",
+		Value: entropy.DefaultConfig.UltraLightFraction,
+	}
+	UltraLightOnlyAnnounceFlag = cli.BoolFlag{
+		Name:  "ulc.onlyannounce",
+		Usage: "Ultra light server sends announcements only",
+	}
+
 	// Dashboard settings
 	DashboardEnabledFlag = cli.BoolFlag{
 		Name:  "dashboard",
@@ -220,6 +285,10 @@ var (
 		Value: entropy.DefaultConfig.Ethash.DatasetsOnDisk,
 	}
 	// Transaction pool settings
+	TxPoolLocalsFlag = cli.StringFlag{
+		Name:  "txpool.locals",
+		Usage: "Comma separated accounts to treat as locals (no flush, priority inclusion)",
+	}
 	TxPoolNoLocalsFlag = cli.BoolFlag{
 		Name:  "txpool.nolocals",
 		Usage: "Disables price exemptions for locally submitted transactions",
@@ -272,53 +341,101 @@ var (
 	// Performance tuning settings
 	CacheFlag = cli.IntFlag{
 		Name:  "cache",
-		Usage: "Megabytes of memory allocated to internal caching",
+		Usage: "Megabytes of memory allocated to internal caching (default = 4096 mainnet full node, 128 light mode)",
 		Value: 1024,
 	}
 	CacheDatabaseFlag = cli.IntFlag{
 		Name:  "cache.database",
 		Usage: "Percentage of cache memory allowance to use for database io",
-		Value: 75,
+		Value: 50,
+	}
+	CacheTrieFlag = cli.IntFlag{
+		Name:  "cache.trie",
+		Usage: "Percentage of cache memory allowance to use for trie caching (default = 25% full mode, 50% archive mode)",
+		Value: 25,
 	}
 	CacheGCFlag = cli.IntFlag{
 		Name:  "cache.gc",
-		Usage: "Percentage of cache memory allowance to use for trie pruning",
+		Usage: "Percentage of cache memory allowance to use for trie pruning (default = 25% full mode, 0% archive mode)",
 		Value: 25,
 	}
-	TrieCacheGenFlag = cli.IntFlag{
-		Name:  "trie-cache-gens",
-		Usage: "Number of trie node generations to keep in memory",
-		Value: int(state.MaxTrieCacheGen),
+	CacheNoPrefetchFlag = cli.BoolFlag{
+		Name:  "cache.noprefetch",
+		Usage: "Disable heuristic state prefetch during block import (less CPU and disk IO, more time waiting for data)",
 	}
+
 	// Miner settings
 	MiningEnabledFlag = cli.BoolFlag{
 		Name:  "mine",
 		Usage: "Enable mining",
 	}
 	MinerThreadsFlag = cli.IntFlag{
-		Name:  "minerthreads",
+		Name:  "miner.threads",
 		Usage: "Number of CPU threads to use for mining",
-		Value: runtime.NumCPU(),
+		Value: 0,
 	}
-	TargetGasLimitFlag = cli.Uint64Flag{
+	MinerLegacyThreadsFlag = cli.IntFlag{
+		Name:  "minerthreads",
+		Usage: "Number of CPU threads to use for mining (deprecated, use --miner.threads)",
+		Value: 0,
+	}
+	MinerNotifyFlag = cli.StringFlag{
+		Name:  "miner.notify",
+		Usage: "Comma separated HTTP URL list to notify of new work packages",
+	}
+	MinerGasTargetFlag = cli.Uint64Flag{
+		Name:  "miner.gastarget",
+		Usage: "Target gas floor for mined blocks",
+		Value: entropy.DefaultConfig.Miner.GasFloor,
+	}
+	MinerLegacyGasTargetFlag = cli.Uint64Flag{
 		Name:  "targetgaslimit",
-		Usage: "Target gas limit sets the artificial target gas floor for the blocks to mine",
-		Value: config.GenesisGasLimit,
+		Usage: "Target gas floor for mined blocks (deprecated, use --miner.gastarget)",
+		Value: entropy.DefaultConfig.Miner.GasFloor,
 	}
-	EntropyBaseFlag = cli.StringFlag{
-		Name:  "entropybase",
-		Usage: "Public address for block mining rewards (default = first account created)",
+	MinerGasLimitFlag = cli.Uint64Flag{
+		Name:  "miner.gaslimit",
+		Usage: "Target gas ceiling for mined blocks",
+		Value: entropy.DefaultConfig.Miner.GasCeil,
+	}
+	MinerGasPriceFlag = BigFlag{
+		Name:  "miner.gasprice",
+		Usage: "Minimum gas price for mining a transaction",
+		Value: entropy.DefaultConfig.Miner.GasPrice,
+	}
+	MinerLegacyGasPriceFlag = BigFlag{
+		Name:  "gasprice",
+		Usage: "Minimum gas price for mining a transaction (deprecated, use --miner.gasprice)",
+		Value: entropy.DefaultConfig.Miner.GasPrice,
+	}
+	MinerEtherbaseFlag = cli.StringFlag{
+		Name:  "miner.etherbase",
+		Usage: "Public address for block mining rewards (default = first account)",
 		Value: "0",
 	}
-	GasPriceFlag = BigFlag{
-		Name:  "gasprice",
-		Usage: "Minimal gas price to accept for mining a transactions",
-		Value: entropy.DefaultConfig.GasPrice,
+	MinerLegacyEtherbaseFlag = cli.StringFlag{
+		Name:  "etherbase",
+		Usage: "Public address for block mining rewards (default = first account, deprecated, use --miner.etherbase)",
+		Value: "0",
 	}
-	ExtraDataFlag = cli.StringFlag{
-		Name:  "extradata",
+	MinerExtraDataFlag = cli.StringFlag{
+		Name:  "miner.extradata",
 		Usage: "Block extra data set by the miner (default = client version)",
 	}
+	MinerLegacyExtraDataFlag = cli.StringFlag{
+		Name:  "extradata",
+		Usage: "Block extra data set by the miner (default = client version, deprecated, use --miner.extradata)",
+	}
+	MinerRecommitIntervalFlag = cli.DurationFlag{
+		Name:  "miner.recommit",
+		Usage: "Time interval to recreate the block being mined",
+		Value: entropy.DefaultConfig.Miner.Recommit,
+	}
+	MinerNoVerfiyFlag = cli.BoolFlag{
+		Name:  "miner.noverify",
+		Usage: "Disable remote sealing verification",
+	}
+
 	// Account settings
 	UnlockedAccountFlag = cli.StringFlag{
 		Name:  "unlock",
@@ -330,19 +447,27 @@ var (
 		Usage: "Password file to use for non-interactive password input",
 		Value: "",
 	}
-
+	ExternalSignerFlag = cli.StringFlag{
+		Name:  "signer",
+		Usage: "External signer (url or path to ipc file)",
+		Value: "",
+	}
 	VMEnableDebugFlag = cli.BoolFlag{
 		Name:  "vmdebug",
 		Usage: "Record information useful for VM and contract debugging",
+	}
+	InsecureUnlockAllowedFlag = cli.BoolFlag{
+		Name:  "allow-insecure-unlock",
+		Usage: "Allow insecure account unlocking when account-related RPCs are exposed by http",
+	}
+	RPCGlobalGasCap = cli.Uint64Flag{
+		Name:  "rpc.gascap",
+		Usage: "Sets a cap on gas that can be used in eth_call/estimateGas",
 	}
 	// Logging and debug settings
 	EntropyStatsURLFlag = cli.StringFlag{
 		Name:  "ethstats",
 		Usage: "Reporting URL of a ethstats service (nodename:secret@host:port)",
-	}
-	MetricsEnabledFlag = cli.BoolFlag{
-		Name:  metrics.MetricsEnabledFlag,
-		Usage: "Enable metrics collection and reporting",
 	}
 	FakePoWFlag = cli.BoolFlag{
 		Name:  "fakepow",
@@ -366,6 +491,30 @@ var (
 		Name:  "rpcport",
 		Usage: "HTTP-RPC server listening port",
 		Value: node.DefaultHTTPPort,
+	}
+	GraphQLEnabledFlag = cli.BoolFlag{
+		Name:  "graphql",
+		Usage: "Enable the GraphQL server",
+	}
+	GraphQLListenAddrFlag = cli.StringFlag{
+		Name:  "graphql.addr",
+		Usage: "GraphQL server listening interface",
+		Value: node.DefaultGraphQLHost,
+	}
+	GraphQLPortFlag = cli.IntFlag{
+		Name:  "graphql.port",
+		Usage: "GraphQL server listening port",
+		Value: node.DefaultGraphQLPort,
+	}
+	GraphQLCORSDomainFlag = cli.StringFlag{
+		Name:  "graphql.rpccorsdomain",
+		Usage: "Comma separated list of domains from which to accept cross origin requests (browser enforced)",
+		Value: "",
+	}
+	GraphQLVirtualHostsFlag = cli.StringFlag{
+		Name:  "graphql.rpcvhosts",
+		Usage: "Comma separated list of virtual hostnames from which to accept requests (server enforced). Accepts '*' wildcard.",
+		Value: strings.Join(node.DefaultConfig.HTTPVirtualHosts, ","),
 	}
 	RPCCORSDomainFlag = cli.StringFlag{
 		Name:  "rpccorsdomain",
@@ -427,12 +576,12 @@ var (
 	MaxPeersFlag = cli.IntFlag{
 		Name:  "maxpeers",
 		Usage: "Maximum number of network peers (network disabled if set to 0)",
-		Value: 25,
+		Value: node.DefaultConfig.P2P.MaxPeers,
 	}
 	MaxPendingPeersFlag = cli.IntFlag{
 		Name:  "maxpendpeers",
 		Usage: "Maximum number of pending connection attempts (defaults used if set to 0)",
-		Value: 0,
+		Value: node.DefaultConfig.P2P.MaxPendingPeers,
 	}
 	ListenPortFlag = cli.IntFlag{
 		Name:  "port",
@@ -502,6 +651,73 @@ var (
 		Name:  "shh",
 		Usage: "Enable Whisper",
 	}
+	WhisperMaxMessageSizeFlag = cli.IntFlag{
+		Name:  "shh.maxmessagesize",
+		Usage: "Max message size accepted",
+		//Value: int(whisper.DefaultMaxMessageSize),
+	}
+	WhisperMinPOWFlag = cli.Float64Flag{
+		Name:  "shh.pow",
+		Usage: "Minimum POW accepted",
+		//Value: whisper.DefaultMinimumPoW,
+	}
+	WhisperRestrictConnectionBetweenLightClientsFlag = cli.BoolFlag{
+		Name:  "shh.restrict-light",
+		Usage: "Restrict connection between two whisper light clients",
+	}
+	// Metrics flags
+	MetricsEnabledFlag = cli.BoolFlag{
+		Name:  "metrics",
+		Usage: "Enable metrics collection and reporting",
+	}
+	MetricsEnabledExpensiveFlag = cli.BoolFlag{
+		Name:  "metrics.expensive",
+		Usage: "Enable expensive metrics collection and reporting",
+	}
+	MetricsEnableInfluxDBFlag = cli.BoolFlag{
+		Name:  "metrics.influxdb",
+		Usage: "Enable metrics export/push to an external InfluxDB database",
+	}
+	MetricsInfluxDBEndpointFlag = cli.StringFlag{
+		Name:  "metrics.influxdb.endpoint",
+		Usage: "InfluxDB API endpoint to report metrics to",
+		Value: "http://localhost:8086",
+	}
+	MetricsInfluxDBDatabaseFlag = cli.StringFlag{
+		Name:  "metrics.influxdb.database",
+		Usage: "InfluxDB database name to push reported metrics to",
+		Value: "geth",
+	}
+	MetricsInfluxDBUsernameFlag = cli.StringFlag{
+		Name:  "metrics.influxdb.username",
+		Usage: "Username to authorize access to the database",
+		Value: "test",
+	}
+	MetricsInfluxDBPasswordFlag = cli.StringFlag{
+		Name:  "metrics.influxdb.password",
+		Usage: "Password to authorize access to the database",
+		Value: "test",
+	}
+	// Tags are part of every measurement sent to InfluxDB. Queries on tags are faster in InfluxDB.
+	// For example `host` tag could be used so that we can group all nodes and average a measurement
+	// across all of them, but also so that we can select a specific node and inspect its measurements.
+	// https://docs.influxdata.com/influxdb/v1.4/concepts/key_concepts/#tag-key
+	MetricsInfluxDBTagsFlag = cli.StringFlag{
+		Name:  "metrics.influxdb.tags",
+		Usage: "Comma-separated InfluxDB tags (key/values) attached to all measurements",
+		Value: "host=localhost",
+	}
+
+	EWASMInterpreterFlag = cli.StringFlag{
+		Name:  "vm.ewasm",
+		Usage: "External ewasm configuration (default = built-in interpreter)",
+		Value: "",
+	}
+	EVMInterpreterFlag = cli.StringFlag{
+		Name:  "vm.evm",
+		Usage: "External EVM configuration (default = built-in interpreter)",
+		Value: "",
+	}
 )
 
 // MakeDataDir retrieves the currently requested data directory, terminating
@@ -515,49 +731,298 @@ func MakeDataDir(ctx *cli.Context) string {
 		if ctx.GlobalBool(RinkebyFlag.Name) {
 			return filepath.Join(path, "rinkeby")
 		}
+		if ctx.GlobalBool(GoerliFlag.Name) {
+			return filepath.Join(path, "goerli")
+		}
 		return path
 	}
 	Fatalf("Cannot determine default data directory, please set manually (--datadir)")
 	return ""
 }
 
-// RegisterEthService adds an Entropy client to the stack.
-func RegisterEntropyService(stack *node.Node, cfg *entropy.Config) {
-	var err error
-	if cfg.SyncMode == downloader.LightSync {
-		//err = stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
-		//	return les.New(ctx, cfg)
-		//})
-	} else {
-		err = stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
-			fullNode, err := entropy.New(ctx, cfg)
-			if fullNode != nil && cfg.LightServ > 0 {
-				//ls, _ := les.NewLesServer(fullNode, cfg)
-				//fullNode.AddLesServer(ls)
-			}
-			return fullNode, err
-		})
-	}
-	if err != nil {
-		Fatalf("Failed to register the Entropy service: %v", err)
+// setNodeKey creates a node key from set command line flags, either loading it
+// from a file or as a specified hex value. If neither flags were provided, this
+// method returns nil and an emphemeral key is to be generated.
+func setNodeKey(ctx *cli.Context, cfg *p2p.Config) {
+	var (
+		hex  = ctx.GlobalString(NodeKeyHexFlag.Name)
+		file = ctx.GlobalString(NodeKeyFileFlag.Name)
+		key  *ecdsa.PrivateKey
+		err  error
+	)
+	switch {
+	case file != "" && hex != "":
+		Fatalf("Options %q and %q are mutually exclusive", NodeKeyFileFlag.Name, NodeKeyHexFlag.Name)
+	case file != "":
+		if key, err = crypto.LoadECDSA(file); err != nil {
+			Fatalf("Option %q: %v", NodeKeyFileFlag.Name, err)
+		}
+		cfg.PrivateKey = key
+	case hex != "":
+		if key, err = crypto.HexToECDSA(hex); err != nil {
+			Fatalf("Option %q: %v", NodeKeyHexFlag.Name, err)
+		}
+		cfg.PrivateKey = key
 	}
 }
 
-// RegisterEthStatsService configures the Entropy Stats daemon and adds it to
-// th egiven node.
-func RegisterEntropyStatsService(stack *node.Node, url string) {
-	if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
-		// Retrieve both entropy and les services
-		var ethServ *entropy.Entropy
-		ctx.Service(&ethServ)
-
-		//var lesServ *les.LightEntropy
-		//ctx.Service(&lesServ)
-
-		return entropystats.New(url, ethServ /*, lesServ*/)
-	}); err != nil {
-		Fatalf("Failed to register the Entropy Stats service: %v", err)
+// setNodeUserIdent creates the user identifier from CLI flags.
+func setNodeUserIdent(ctx *cli.Context, cfg *node.Config) {
+	if identity := ctx.GlobalString(IdentityFlag.Name); len(identity) > 0 {
+		cfg.UserIdent = identity
 	}
+}
+
+// setBootstrapNodes creates a list of bootstrap nodes from the command line
+// flags, reverting to pre-configured ones if none have been specified.
+func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
+	urls := config.MainnetBootnodes
+	switch {
+	case ctx.GlobalIsSet(BootnodesFlag.Name) || ctx.GlobalIsSet(BootnodesV4Flag.Name):
+		if ctx.GlobalIsSet(BootnodesV4Flag.Name) {
+			urls = strings.Split(ctx.GlobalString(BootnodesV4Flag.Name), ",")
+		} else {
+			urls = strings.Split(ctx.GlobalString(BootnodesFlag.Name), ",")
+		}
+	case ctx.GlobalBool(TestnetFlag.Name):
+		urls = config.TestnetBootnodes
+	case ctx.GlobalBool(RinkebyFlag.Name):
+		urls = config.RinkebyBootnodes
+	case ctx.GlobalBool(GoerliFlag.Name):
+		urls = config.GoerliBootnodes
+	case cfg.BootstrapNodes != nil:
+		return // already set, don't apply defaults.
+	}
+
+	cfg.BootstrapNodes = make([]*enode.Node, 0, len(urls))
+	for _, url := range urls {
+		if url != "" {
+			node, err := enode.ParseV4(url)
+			if err != nil {
+				log.Critical("Bootstrap URL invalid", "enode", url, "err", err)
+				continue
+			}
+			cfg.BootstrapNodes = append(cfg.BootstrapNodes, node)
+		}
+	}
+}
+
+// setBootstrapNodesV5 creates a list of bootstrap nodes from the command line
+// flags, reverting to pre-configured ones if none have been specified.
+func setBootstrapNodesV5(ctx *cli.Context, cfg *p2p.Config) {
+	urls := config.DiscoveryV5Bootnodes
+	switch {
+	case ctx.GlobalIsSet(BootnodesFlag.Name) || ctx.GlobalIsSet(BootnodesV5Flag.Name):
+		if ctx.GlobalIsSet(BootnodesV5Flag.Name) {
+			urls = strings.Split(ctx.GlobalString(BootnodesV5Flag.Name), ",")
+		} else {
+			urls = strings.Split(ctx.GlobalString(BootnodesFlag.Name), ",")
+		}
+	case ctx.GlobalBool(RinkebyFlag.Name):
+		urls = config.RinkebyBootnodes
+	case ctx.GlobalBool(GoerliFlag.Name):
+		urls = config.GoerliBootnodes
+	case cfg.BootstrapNodesV5 != nil:
+		return // already set, don't apply defaults.
+	}
+
+	cfg.BootstrapNodesV5 = make([]*discv5.Node, 0, len(urls))
+	for _, url := range urls {
+		if url != "" {
+			node, err := discv5.ParseNode(url)
+			if err != nil {
+				log.Error("Bootstrap URL invalid", "enode", url, "err", err)
+				continue
+			}
+			cfg.BootstrapNodesV5 = append(cfg.BootstrapNodesV5, node)
+		}
+	}
+}
+
+// setListenAddress creates a TCP listening address string from set command
+// line flags.
+func setListenAddress(ctx *cli.Context, cfg *p2p.Config) {
+	if ctx.GlobalIsSet(ListenPortFlag.Name) {
+		cfg.ListenAddr = fmt.Sprintf(":%d", ctx.GlobalInt(ListenPortFlag.Name))
+	}
+}
+
+// setNAT creates a port mapper from command line flags.
+func setNAT(ctx *cli.Context, cfg *p2p.Config) {
+	if ctx.GlobalIsSet(NATFlag.Name) {
+		natif, err := nat.Parse(ctx.GlobalString(NATFlag.Name))
+		if err != nil {
+			Fatalf("Option %s: %v", NATFlag.Name, err)
+		}
+		cfg.NAT = natif
+	}
+}
+
+// splitAndTrim splits input separated by a comma
+// and trims excessive white space from the substrings.
+func splitAndTrim(input string) []string {
+	result := strings.Split(input, ",")
+	for i, r := range result {
+		result[i] = strings.TrimSpace(r)
+	}
+	return result
+}
+
+// setHTTP creates the HTTP RPC listener interface string from the set
+// command line flags, returning empty if the HTTP endpoint is disabled.
+func setHTTP(ctx *cli.Context, cfg *node.Config) {
+	if ctx.GlobalBool(RPCEnabledFlag.Name) && cfg.HTTPHost == "" {
+		cfg.HTTPHost = "127.0.0.1"
+		if ctx.GlobalIsSet(RPCListenAddrFlag.Name) {
+			cfg.HTTPHost = ctx.GlobalString(RPCListenAddrFlag.Name)
+		}
+	}
+
+	if ctx.GlobalIsSet(RPCPortFlag.Name) {
+		cfg.HTTPPort = ctx.GlobalInt(RPCPortFlag.Name)
+	}
+	if ctx.GlobalIsSet(RPCCORSDomainFlag.Name) {
+		cfg.HTTPCors = splitAndTrim(ctx.GlobalString(RPCCORSDomainFlag.Name))
+	}
+	if ctx.GlobalIsSet(RPCApiFlag.Name) {
+		cfg.HTTPModules = splitAndTrim(ctx.GlobalString(RPCApiFlag.Name))
+	}
+	if ctx.GlobalIsSet(RPCVirtualHostsFlag.Name) {
+		cfg.HTTPVirtualHosts = splitAndTrim(ctx.GlobalString(RPCVirtualHostsFlag.Name))
+	}
+}
+
+// setGraphQL creates the GraphQL listener interface string from the set
+// command line flags, returning empty if the GraphQL endpoint is disabled.
+func setGraphQL(ctx *cli.Context, cfg *node.Config) {
+	if ctx.GlobalBool(GraphQLEnabledFlag.Name) && cfg.GraphQLHost == "" {
+		cfg.GraphQLHost = "127.0.0.1"
+		if ctx.GlobalIsSet(GraphQLListenAddrFlag.Name) {
+			cfg.GraphQLHost = ctx.GlobalString(GraphQLListenAddrFlag.Name)
+		}
+	}
+	cfg.GraphQLPort = ctx.GlobalInt(GraphQLPortFlag.Name)
+	if ctx.GlobalIsSet(GraphQLCORSDomainFlag.Name) {
+		cfg.GraphQLCors = splitAndTrim(ctx.GlobalString(GraphQLCORSDomainFlag.Name))
+	}
+	if ctx.GlobalIsSet(GraphQLVirtualHostsFlag.Name) {
+		cfg.GraphQLVirtualHosts = splitAndTrim(ctx.GlobalString(GraphQLVirtualHostsFlag.Name))
+	}
+}
+
+// setWS creates the WebSocket RPC listener interface string from the set
+// command line flags, returning empty if the HTTP endpoint is disabled.
+func setWS(ctx *cli.Context, cfg *node.Config) {
+	if ctx.GlobalBool(WSEnabledFlag.Name) && cfg.WSHost == "" {
+		cfg.WSHost = "127.0.0.1"
+		if ctx.GlobalIsSet(WSListenAddrFlag.Name) {
+			cfg.WSHost = ctx.GlobalString(WSListenAddrFlag.Name)
+		}
+	}
+
+	if ctx.GlobalIsSet(WSPortFlag.Name) {
+		cfg.WSPort = ctx.GlobalInt(WSPortFlag.Name)
+	}
+	if ctx.GlobalIsSet(WSAllowedOriginsFlag.Name) {
+		cfg.WSOrigins = splitAndTrim(ctx.GlobalString(WSAllowedOriginsFlag.Name))
+	}
+	if ctx.GlobalIsSet(WSApiFlag.Name) {
+		cfg.WSModules = splitAndTrim(ctx.GlobalString(WSApiFlag.Name))
+	}
+}
+
+// setIPC creates an IPC path configuration from the set command line flags,
+// returning an empty string if IPC was explicitly disabled, or the set path.
+func setIPC(ctx *cli.Context, cfg *node.Config) {
+	CheckExclusive(ctx, IPCDisabledFlag, IPCPathFlag)
+	switch {
+	case ctx.GlobalBool(IPCDisabledFlag.Name):
+		cfg.IPCPath = ""
+	case ctx.GlobalIsSet(IPCPathFlag.Name):
+		cfg.IPCPath = ctx.GlobalString(IPCPathFlag.Name)
+	}
+}
+
+// makeDatabaseHandles raises out the number of allowed file handles per process
+// for Geth and returns half of the allowance to assign to the database.
+func makeDatabaseHandles() int {
+	limit, err := fdlimit.Maximum()
+	if err != nil {
+		Fatalf("Failed to retrieve file descriptor allowance: %v", err)
+	}
+	raised, err := fdlimit.Raise(uint64(limit))
+	if err != nil {
+		Fatalf("Failed to raise file descriptor allowance: %v", err)
+	}
+	return int(raised / 2) // Leave half for networking and other stuff
+}
+
+// MakeAddress converts an account specified directly as a hex encoded string or
+// a key index in the key store to an internal account representation.
+func MakeAddress(ks *keystore.KeyStore, accountObj string) (account.Account, error) {
+	// If the specified account is a valid address, return it
+	if common.IsHexAddress(accountObj) {
+		return account.Account{Address: common.HexToAddress(accountObj)}, nil
+	}
+	// Otherwise try to interpret the account as a keystore index
+	index, err := strconv.Atoi(accountObj)
+	if err != nil || index < 0 {
+		return account.Account{}, fmt.Errorf("invalid account address or index %q", accountObj)
+	}
+	log.Warning("-------------------------------------------------------------------")
+	log.Warning("Referring to accounts by order in the keystore folder is dangerous!")
+	log.Warning("This functionality is deprecated and will be removed in the future!")
+	log.Warning("Please use explicit addresses! (can search via `geth account list`)")
+	log.Warning("-------------------------------------------------------------------")
+
+	accs := ks.Accounts()
+	if len(accs) <= index {
+		return account.Account{}, fmt.Errorf("index %d higher than number of accounts %d", index, len(accs))
+	}
+	return accs[index], nil
+}
+
+// setEtherbase retrieves the etherbase either from the directly specified
+// command line flags or from the keystore if CLI indexed.
+func setEtherbase(ctx *cli.Context, ks *keystore.KeyStore, cfg *entropy.Config) {
+	// Extract the current etherbase, new flag overriding legacy one
+	var etherbase string
+	if ctx.GlobalIsSet(MinerLegacyEtherbaseFlag.Name) {
+		etherbase = ctx.GlobalString(MinerLegacyEtherbaseFlag.Name)
+	}
+	if ctx.GlobalIsSet(MinerEtherbaseFlag.Name) {
+		etherbase = ctx.GlobalString(MinerEtherbaseFlag.Name)
+	}
+	// Convert the etherbase into an address and configure it
+	if etherbase != "" {
+		if ks != nil {
+			accountObj, err := MakeAddress(ks, etherbase)
+			if err != nil {
+				Fatalf("Invalid miner etherbase: %v", err)
+			}
+			cfg.Miner.EntropyBase = accountObj.Address
+		} else {
+			Fatalf("No etherbase configured")
+		}
+	}
+}
+
+// MakePasswordList reads password lines from the file specified by the global --password flag.
+func MakePasswordList(ctx *cli.Context) []string {
+	path := ctx.GlobalString(PasswordFileFlag.Name)
+	if path == "" {
+		return nil
+	}
+	text, err := ioutil.ReadFile(path)
+	if err != nil {
+		Fatalf("Failed to read password file: %v", err)
+	}
+	lines := strings.Split(string(text), "\n")
+	// Sanitise DOS line endings.
+	for i := range lines {
+		lines[i] = strings.TrimRight(lines[i], "\r")
+	}
+	return lines
 }
 
 func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config) {
@@ -567,31 +1032,35 @@ func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config) {
 	setBootstrapNodes(ctx, cfg)
 	//setBootstrapNodesV5(ctx, cfg)
 
-	lightClient := ctx.GlobalBool(LightModeFlag.Name) || ctx.GlobalString(SyncModeFlag.Name) == "light"
-	lightServer := ctx.GlobalInt(LightServFlag.Name) != 0
-	lightPeers := ctx.GlobalInt(LightPeersFlag.Name)
+	lightClient := ctx.GlobalString(SyncModeFlag.Name) == "light"
+	lightServer := ctx.GlobalInt(LightLegacyServFlag.Name) != 0 || ctx.GlobalInt(LightServeFlag.Name) != 0
+
+	lightPeers := ctx.GlobalInt(LightLegacyPeersFlag.Name)
+	if ctx.GlobalIsSet(LightMaxPeersFlag.Name) {
+		lightPeers = ctx.GlobalInt(LightMaxPeersFlag.Name)
+	}
 
 	if ctx.GlobalIsSet(MaxPeersFlag.Name) {
 		cfg.MaxPeers = ctx.GlobalInt(MaxPeersFlag.Name)
-		if lightServer && !ctx.GlobalIsSet(LightPeersFlag.Name) {
+		if lightServer && !ctx.GlobalIsSet(LightLegacyPeersFlag.Name) && !ctx.GlobalIsSet(LightMaxPeersFlag.Name) {
 			cfg.MaxPeers += lightPeers
 		}
 	} else {
 		if lightServer {
 			cfg.MaxPeers += lightPeers
 		}
-		if lightClient && ctx.GlobalIsSet(LightPeersFlag.Name) && cfg.MaxPeers < lightPeers {
+		if lightClient && (ctx.GlobalIsSet(LightLegacyPeersFlag.Name) || ctx.GlobalIsSet(LightMaxPeersFlag.Name)) && cfg.MaxPeers < lightPeers {
 			cfg.MaxPeers = lightPeers
 		}
 	}
 	if !(lightClient || lightServer) {
 		lightPeers = 0
 	}
-	ethPeers := cfg.MaxPeers - lightPeers
+	entropyPeers := cfg.MaxPeers - lightPeers
 	if lightClient {
-		ethPeers = 0
+		entropyPeers = 0
 	}
-	log.Infof("SetP2PConfig Maximum peer count. Entropy=%d, LES=%d, total=%d", ethPeers, lightPeers, cfg.MaxPeers)
+	log.Infof("SetP2PConfig Maximum peer count. Entropy=%d, LES=%d, total=%d", entropyPeers, lightPeers, cfg.MaxPeers)
 
 	if ctx.GlobalIsSet(MaxPendingPeersFlag.Name) {
 		cfg.MaxPendingPeers = ctx.GlobalInt(MaxPendingPeersFlag.Name)
@@ -627,208 +1096,18 @@ func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config) {
 	}
 }
 
-// setNAT creates a port mapper from command line flags.
-func setNAT(ctx *cli.Context, cfg *p2p.Config) {
-	if ctx.GlobalIsSet(NATFlag.Name) {
-		natif, err := nat.Parse(ctx.GlobalString(NATFlag.Name))
-		if err != nil {
-			Fatalf("Option %s: %v", NATFlag.Name, err)
-		}
-		cfg.NAT = natif
-	}
-}
-
-// setNodeKey creates a node key from set command line flags, either loading it
-// from a file or as a specified hex value. If neither flags were provided, this
-// method returns nil and an emphemeral key is to be generated.
-func setNodeKey(ctx *cli.Context, cfg *p2p.Config) {
-	var (
-		hex  = ctx.GlobalString(NodeKeyHexFlag.Name)
-		file = ctx.GlobalString(NodeKeyFileFlag.Name)
-		key  *ecdsa.PrivateKey
-		err  error
-	)
-	switch {
-	case file != "" && hex != "":
-		Fatalf("Options %q and %q are mutually exclusive", NodeKeyFileFlag.Name, NodeKeyHexFlag.Name)
-	case file != "":
-		if key, err = crypto.LoadECDSA(file); err != nil {
-			Fatalf("Option %q: %v", NodeKeyFileFlag.Name, err)
-		}
-		cfg.PrivateKey = key
-	case hex != "":
-		if key, err = crypto.HexToECDSA(hex); err != nil {
-			Fatalf("Option %q: %v", NodeKeyHexFlag.Name, err)
-		}
-		cfg.PrivateKey = key
-	}
-}
-
-// setListenAddress creates a TCP listening address string from set command
-// line flags.
-func setListenAddress(ctx *cli.Context, cfg *p2p.Config) {
-	if ctx.GlobalIsSet(ListenPortFlag.Name) {
-		cfg.ListenAddr = fmt.Sprintf(":%d", ctx.GlobalInt(ListenPortFlag.Name))
-	}
-}
-
-// setBootstrapNodes creates a list of bootstrap nodes from the command line
-// flags, reverting to pre-configured ones if none have been specified.
-func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
-	urls := config.MainnetBootnodes
-	switch {
-	case ctx.GlobalIsSet(BootnodesFlag.Name) || ctx.GlobalIsSet(BootnodesV4Flag.Name):
-		if ctx.GlobalIsSet(BootnodesV4Flag.Name) {
-			urls = strings.Split(ctx.GlobalString(BootnodesV4Flag.Name), ",")
-		} else {
-			urls = strings.Split(ctx.GlobalString(BootnodesFlag.Name), ",")
-		}
-	case ctx.GlobalBool(TestnetFlag.Name):
-		urls = config.TestnetBootnodes
-	case cfg.BootstrapNodes != nil:
-		return // already set, don't apply defaults.
-	}
-
-	cfg.BootstrapNodes = make([]*discover.Node, 0, len(urls))
-	for _, url := range urls {
-		node, err := discover.ParseNode(url)
-		if err != nil {
-			log.Error("Bootstrap URL invalid", "enode", url, "err", err)
-			continue
-		}
-		cfg.BootstrapNodes = append(cfg.BootstrapNodes, node)
-	}
-}
-
-// checkExclusive verifies that only a single isntance of the provided flags was
-// set by the user. Each flag might optionally be followed by a string type to
-// specialize it further.
-func checkExclusive(ctx *cli.Context, args ...interface{}) {
-	set := make([]string, 0, 1)
-	for i := 0; i < len(args); i++ {
-		// Make sure the next argument is a flag and skip if not set
-		flag, ok := args[i].(cli.Flag)
-		if !ok {
-			panic(fmt.Sprintf("invalid argument, not cli.Flag type: %T", args[i]))
-		}
-		// Check if next arg extends current and expand its name if so
-		name := flag.GetName()
-
-		if i+1 < len(args) {
-			switch option := args[i+1].(type) {
-			case string:
-				// Extended flag, expand the name and shift the arguments
-				if ctx.GlobalString(flag.GetName()) == option {
-					name += "=" + option
-				}
-				i++
-
-			case cli.Flag:
-			default:
-				panic(fmt.Sprintf("invalid argument, not cli.Flag or string extension: %T", args[i+1]))
-			}
-		}
-		// Mark the flag if it's set
-		if ctx.GlobalIsSet(flag.GetName()) {
-			set = append(set, "--"+name)
-		}
-	}
-	if len(set) > 1 {
-		Fatalf("Flags %v can't be used at the same time", strings.Join(set, ", "))
-	}
-}
-
-// splitAndTrim splits input separated by a comma
-// and trims excessive white space from the substrings.
-func splitAndTrim(input string) []string {
-	result := strings.Split(input, ",")
-	for i, r := range result {
-		result[i] = strings.TrimSpace(r)
-	}
-	return result
-}
-
-// setIPC creates an IPC path configuration from the set command line flags,
-// returning an empty string if IPC was explicitly disabled, or the set path.
-func setIPC(ctx *cli.Context, cfg *node.Config) {
-	checkExclusive(ctx, IPCDisabledFlag, IPCPathFlag)
-	switch {
-	case ctx.GlobalBool(IPCDisabledFlag.Name):
-		cfg.IPCPath = ""
-	case ctx.GlobalIsSet(IPCPathFlag.Name):
-		cfg.IPCPath = ctx.GlobalString(IPCPathFlag.Name)
-	}
-}
-
-// setHTTP creates the HTTP RPC listener interface string from the set
-// command line flags, returning empty if the HTTP endpoint is disabled.
-func setHTTP(ctx *cli.Context, cfg *node.Config) {
-	if ctx.GlobalBool(RPCEnabledFlag.Name) && cfg.HTTPHost == "" {
-		cfg.HTTPHost = "127.0.0.1"
-		if ctx.GlobalIsSet(RPCListenAddrFlag.Name) {
-			cfg.HTTPHost = ctx.GlobalString(RPCListenAddrFlag.Name)
-		}
-	}
-
-	if ctx.GlobalIsSet(RPCPortFlag.Name) {
-		cfg.HTTPPort = ctx.GlobalInt(RPCPortFlag.Name)
-	}
-	if ctx.GlobalIsSet(RPCCORSDomainFlag.Name) {
-		cfg.HTTPCors = splitAndTrim(ctx.GlobalString(RPCCORSDomainFlag.Name))
-	}
-	if ctx.GlobalIsSet(RPCApiFlag.Name) {
-		cfg.HTTPModules = splitAndTrim(ctx.GlobalString(RPCApiFlag.Name))
-	}
-	if ctx.GlobalIsSet(RPCVirtualHostsFlag.Name) {
-		cfg.HTTPVirtualHosts = splitAndTrim(ctx.GlobalString(RPCVirtualHostsFlag.Name))
-	}
-}
-
-// setWS creates the WebSocket RPC listener interface string from the set
-// command line flags, returning empty if the HTTP endpoint is disabled.
-func setWS(ctx *cli.Context, cfg *node.Config) {
-	if ctx.GlobalBool(WSEnabledFlag.Name) && cfg.WSHost == "" {
-		cfg.WSHost = "127.0.0.1"
-		if ctx.GlobalIsSet(WSListenAddrFlag.Name) {
-			cfg.WSHost = ctx.GlobalString(WSListenAddrFlag.Name)
-		}
-	}
-
-	if ctx.GlobalIsSet(WSPortFlag.Name) {
-		cfg.WSPort = ctx.GlobalInt(WSPortFlag.Name)
-	}
-	if ctx.GlobalIsSet(WSAllowedOriginsFlag.Name) {
-		cfg.WSOrigins = splitAndTrim(ctx.GlobalString(WSAllowedOriginsFlag.Name))
-	}
-	if ctx.GlobalIsSet(WSApiFlag.Name) {
-		cfg.WSModules = splitAndTrim(ctx.GlobalString(WSApiFlag.Name))
-	}
-}
-
-// setNodeUserIdent creates the user identifier from CLI flags.
-func setNodeUserIdent(ctx *cli.Context, cfg *node.Config) {
-	if identity := ctx.GlobalString(IdentityFlag.Name); len(identity) > 0 {
-		cfg.UserIdent = identity
-	}
-}
-
 // SetNodeConfig applies node-related command line flags to the config.
 func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 	SetP2PConfig(ctx, &cfg.P2P)
 	setIPC(ctx, cfg)
 	setHTTP(ctx, cfg)
+	setGraphQL(ctx, cfg)
 	setWS(ctx, cfg)
 	setNodeUserIdent(ctx, cfg)
+	setDataDir(ctx, cfg)
 
-	switch {
-	case ctx.GlobalIsSet(DataDirFlag.Name):
-		cfg.DataDir = ctx.GlobalString(DataDirFlag.Name)
-	case ctx.GlobalBool(DeveloperFlag.Name):
-		cfg.DataDir = "" // unless explicitly requested, use memory databases
-	case ctx.GlobalBool(TestnetFlag.Name):
-		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "testnet")
-	case ctx.GlobalBool(RinkebyFlag.Name):
-		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "rinkeby")
+	if ctx.GlobalIsSet(ExternalSignerFlag.Name) {
+		cfg.ExternalSigner = ctx.GlobalString(ExternalSignerFlag.Name)
 	}
 
 	if ctx.GlobalIsSet(KeyStoreDirFlag.Name) {
@@ -840,60 +1119,23 @@ func SetNodeConfig(ctx *cli.Context, cfg *node.Config) {
 	if ctx.GlobalIsSet(NoUSBFlag.Name) {
 		cfg.NoUSB = ctx.GlobalBool(NoUSBFlag.Name)
 	}
+	if ctx.GlobalIsSet(InsecureUnlockAllowedFlag.Name) {
+		cfg.InsecureUnlockAllowed = ctx.GlobalBool(InsecureUnlockAllowedFlag.Name)
+	}
 }
 
-// makeDatabaseHandles raises out the number of allowed file handles per process
-// for Entropy and returns half of the allowance to assign to the database.
-func makeDatabaseHandles() int {
-	limit, err := fdlimit.Current()
-	if err != nil {
-		Fatalf("Failed to retrieve file descriptor allowance: %v", err)
-	}
-	if limit < 2048 {
-		if err := fdlimit.Raise(2048); err != nil {
-			Fatalf("Failed to raise file descriptor allowance: %v", err)
-		}
-	}
-	if limit > 2048 { // cap database file descriptors even if more is available
-		limit = 2048
-	}
-	return limit / 2 // Leave half for networking and other stuff
-}
-
-// MakeAddress converts an account specified directly as a hex encoded string or
-// a key index in the key store to an internal account representation.
-func MakeAddress(ks *keystore.KeyStore, accountAddr string) (account.Account, error) {
-	// If the specified account is a valid address, return it
-	if common.IsHexAddress(accountAddr) {
-		return account.Account{Address: common.HexToAddress(accountAddr)}, nil
-	}
-	// Otherwise try to interpret the account as a keystore index
-	index, err := strconv.Atoi(accountAddr)
-	if err != nil || index < 0 {
-		return account.Account{}, fmt.Errorf("invalid account address or index %q", accountAddr)
-	}
-	log.Warning("-------------------------------------------------------------------")
-	log.Warning("Referring to account by order in the keystore folder is dangerous!")
-	log.Warning("This functionality is deprecated and will be removed in the future!")
-	log.Warning("Please use explicit addresses! (can search via `entropy account list`)")
-	log.Warning("-------------------------------------------------------------------")
-
-	accs := ks.Accounts()
-	if len(accs) <= index {
-		return account.Account{}, fmt.Errorf("index %d higher than number of account %d", index, len(accs))
-	}
-	return accs[index], nil
-}
-
-// setEntropyBase retrieves the entropybase either from the directly specified
-// command line flags or from the keystore if CLI indexed.
-func setEntropyBase(ctx *cli.Context, ks *keystore.KeyStore, cfg *entropy.Config) {
-	if ctx.GlobalIsSet(EntropyBaseFlag.Name) {
-		account, err := MakeAddress(ks, ctx.GlobalString(EntropyBaseFlag.Name))
-		if err != nil {
-			Fatalf("Option %q: %v", EntropyBaseFlag.Name, err)
-		}
-		cfg.EntropyBase = account.Address
+func setDataDir(ctx *cli.Context, cfg *node.Config) {
+	switch {
+	case ctx.GlobalIsSet(DataDirFlag.Name):
+		cfg.DataDir = ctx.GlobalString(DataDirFlag.Name)
+	case ctx.GlobalBool(DeveloperFlag.Name):
+		cfg.DataDir = "" // unless explicitly requested, use memory databases
+	case ctx.GlobalBool(TestnetFlag.Name):
+		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "testnet")
+	case ctx.GlobalBool(RinkebyFlag.Name):
+		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "rinkeby")
+	case ctx.GlobalBool(GoerliFlag.Name):
+		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "goerli")
 	}
 }
 
@@ -907,6 +1149,16 @@ func setGPO(ctx *cli.Context, cfg *gasprice.Config) {
 }
 
 func setTxPool(ctx *cli.Context, cfg *blockchain.TxPoolConfig) {
+	if ctx.GlobalIsSet(TxPoolLocalsFlag.Name) {
+		locals := strings.Split(ctx.GlobalString(TxPoolLocalsFlag.Name), ",")
+		for _, account := range locals {
+			if trimmed := strings.TrimSpace(account); !common.IsHexAddress(trimmed) {
+				Fatalf("Invalid account in --txpool.locals: %s", trimmed)
+			} else {
+				cfg.Locals = append(cfg.Locals, common.HexToAddress(account))
+			}
+		}
+	}
 	if ctx.GlobalIsSet(TxPoolNoLocalsFlag.Name) {
 		cfg.NoLocals = ctx.GlobalBool(TxPoolNoLocalsFlag.Name)
 	}
@@ -960,66 +1212,178 @@ func setEthash(ctx *cli.Context, cfg *entropy.Config) {
 	}
 }
 
-// SetEthConfig applies entropy-related command line flags to the config.
+func setMiner(ctx *cli.Context, cfg *miner.Config) {
+	if ctx.GlobalIsSet(MinerNotifyFlag.Name) {
+		cfg.Notify = strings.Split(ctx.GlobalString(MinerNotifyFlag.Name), ",")
+	}
+	if ctx.GlobalIsSet(MinerLegacyExtraDataFlag.Name) {
+		cfg.ExtraData = []byte(ctx.GlobalString(MinerLegacyExtraDataFlag.Name))
+	}
+	if ctx.GlobalIsSet(MinerExtraDataFlag.Name) {
+		cfg.ExtraData = []byte(ctx.GlobalString(MinerExtraDataFlag.Name))
+	}
+	if ctx.GlobalIsSet(MinerLegacyGasTargetFlag.Name) {
+		cfg.GasFloor = ctx.GlobalUint64(MinerLegacyGasTargetFlag.Name)
+	}
+	if ctx.GlobalIsSet(MinerGasTargetFlag.Name) {
+		cfg.GasFloor = ctx.GlobalUint64(MinerGasTargetFlag.Name)
+	}
+	if ctx.GlobalIsSet(MinerGasLimitFlag.Name) {
+		cfg.GasCeil = ctx.GlobalUint64(MinerGasLimitFlag.Name)
+	}
+	if ctx.GlobalIsSet(MinerLegacyGasPriceFlag.Name) {
+		cfg.GasPrice = GlobalBig(ctx, MinerLegacyGasPriceFlag.Name)
+	}
+	if ctx.GlobalIsSet(MinerGasPriceFlag.Name) {
+		cfg.GasPrice = GlobalBig(ctx, MinerGasPriceFlag.Name)
+	}
+	if ctx.GlobalIsSet(MinerRecommitIntervalFlag.Name) {
+		cfg.Recommit = ctx.Duration(MinerRecommitIntervalFlag.Name)
+	}
+	if ctx.GlobalIsSet(MinerNoVerfiyFlag.Name) {
+		cfg.Noverify = ctx.Bool(MinerNoVerfiyFlag.Name)
+	}
+}
+
+func setWhitelist(ctx *cli.Context, cfg *entropy.Config) {
+	whitelist := ctx.GlobalString(WhitelistFlag.Name)
+	if whitelist == "" {
+		return
+	}
+	cfg.Whitelist = make(map[uint64]common.Hash)
+	for _, entry := range strings.Split(whitelist, ",") {
+		parts := strings.Split(entry, "=")
+		if len(parts) != 2 {
+			Fatalf("Invalid whitelist entry: %s", entry)
+		}
+		number, err := strconv.ParseUint(parts[0], 0, 64)
+		if err != nil {
+			Fatalf("Invalid whitelist block number %s: %v", parts[0], err)
+		}
+		var hash common.Hash
+		if err = hash.UnmarshalText([]byte(parts[1])); err != nil {
+			Fatalf("Invalid whitelist hash %s: %v", parts[1], err)
+		}
+		cfg.Whitelist[number] = hash
+	}
+}
+
+// CheckExclusive verifies that only a single instance of the provided flags was
+// set by the user. Each flag might optionally be followed by a string type to
+// specialize it further.
+func CheckExclusive(ctx *cli.Context, args ...interface{}) {
+	set := make([]string, 0, 1)
+	for i := 0; i < len(args); i++ {
+		// Make sure the next argument is a flag and skip if not set
+		flag, ok := args[i].(cli.Flag)
+		if !ok {
+			panic(fmt.Sprintf("invalid argument, not cli.Flag type: %T", args[i]))
+		}
+		// Check if next arg extends current and expand its name if so
+		name := flag.GetName()
+
+		if i+1 < len(args) {
+			switch option := args[i+1].(type) {
+			case string:
+				// Extended flag check, make sure value set doesn't conflict with passed in option
+				if ctx.GlobalString(flag.GetName()) == option {
+					name += "=" + option
+					set = append(set, "--"+name)
+				}
+				// shift arguments and continue
+				i++
+				continue
+
+			case cli.Flag:
+			default:
+				panic(fmt.Sprintf("invalid argument, not cli.Flag or string extension: %T", args[i+1]))
+			}
+		}
+		// Mark the flag if it's set
+		if ctx.GlobalIsSet(flag.GetName()) {
+			set = append(set, "--"+name)
+		}
+	}
+	if len(set) > 1 {
+		Fatalf("Flags %v can't be used at the same time", strings.Join(set, ", "))
+	}
+}
+
+// SetShhConfig applies shh-related command line flags to the config.
+//func SetShhConfig(ctx *cli.Context, stack *node.Node, cfg *whisper.Config) {
+//	if ctx.GlobalIsSet(WhisperMaxMessageSizeFlag.Name) {
+//		cfg.MaxMessageSize = uint32(ctx.GlobalUint(WhisperMaxMessageSizeFlag.Name))
+//	}
+//	if ctx.GlobalIsSet(WhisperMinPOWFlag.Name) {
+//		cfg.MinimumAcceptedPOW = ctx.GlobalFloat64(WhisperMinPOWFlag.Name)
+//	}
+//	if ctx.GlobalIsSet(WhisperRestrictConnectionBetweenLightClientsFlag.Name) {
+//		cfg.RestrictConnectionBetweenLightClients = true
+//	}
+//}
+
+// SetEntropyConfig applies entropy-related command line flags to the config.
 func SetEntropyConfig(ctx *cli.Context, stack *node.Node, cfg *entropy.Config) {
 	// Avoid conflicting network flags
-	checkExclusive(ctx, DeveloperFlag, TestnetFlag, RinkebyFlag)
-	checkExclusive(ctx, FastSyncFlag, LightModeFlag, SyncModeFlag)
-	checkExclusive(ctx, LightServFlag, LightModeFlag)
-	checkExclusive(ctx, LightServFlag, SyncModeFlag, "light")
+	CheckExclusive(ctx, DeveloperFlag, TestnetFlag, RinkebyFlag, GoerliFlag)
+	CheckExclusive(ctx, LightLegacyServFlag, LightServeFlag, SyncModeFlag, "light")
+	CheckExclusive(ctx, DeveloperFlag, ExternalSignerFlag) // Can't use both ephemeral unlocked and external signer
 
-	ks := stack.AccountManager().Backends(keystore.KeyStoreType)[0].(*keystore.KeyStore)
-	setEntropyBase(ctx, ks, cfg)
+	var ks *keystore.KeyStore
+	if keystores := stack.AccountManager().Backends(keystore.KeyStoreType); len(keystores) > 0 {
+		ks = keystores[0].(*keystore.KeyStore)
+	}
+	setEtherbase(ctx, ks, cfg)
 	setGPO(ctx, &cfg.GPO)
 	setTxPool(ctx, &cfg.TxPool)
 	setEthash(ctx, cfg)
+	setMiner(ctx, &cfg.Miner)
+	setWhitelist(ctx, cfg)
+	//setLes(ctx, cfg)
 
-	switch {
-	case ctx.GlobalIsSet(SyncModeFlag.Name):
+	if ctx.GlobalIsSet(SyncModeFlag.Name) {
 		cfg.SyncMode = *GlobalTextMarshaler(ctx, SyncModeFlag.Name).(*downloader.SyncMode)
-	case ctx.GlobalBool(FastSyncFlag.Name):
-		cfg.SyncMode = downloader.FastSync
-	case ctx.GlobalBool(LightModeFlag.Name):
-		cfg.SyncMode = downloader.LightSync
-	}
-	if ctx.GlobalIsSet(LightServFlag.Name) {
-		cfg.LightServ = ctx.GlobalInt(LightServFlag.Name)
-	}
-	if ctx.GlobalIsSet(LightPeersFlag.Name) {
-		cfg.LightPeers = ctx.GlobalInt(LightPeersFlag.Name)
 	}
 	if ctx.GlobalIsSet(NetworkIdFlag.Name) {
 		cfg.NetworkId = ctx.GlobalUint64(NetworkIdFlag.Name)
 	}
-
 	if ctx.GlobalIsSet(CacheFlag.Name) || ctx.GlobalIsSet(CacheDatabaseFlag.Name) {
 		cfg.DatabaseCache = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheDatabaseFlag.Name) / 100
 	}
 	cfg.DatabaseHandles = makeDatabaseHandles()
+	if ctx.GlobalIsSet(AncientFlag.Name) {
+		cfg.DatabaseFreezer = ctx.GlobalString(AncientFlag.Name)
+	}
 
 	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "full" && gcmode != "archive" {
 		Fatalf("--%s must be either 'full' or 'archive'", GCModeFlag.Name)
 	}
 	cfg.NoPruning = ctx.GlobalString(GCModeFlag.Name) == "archive"
+	cfg.NoPrefetch = ctx.GlobalBool(CacheNoPrefetchFlag.Name)
 
-	if ctx.GlobalIsSet(CacheFlag.Name) || ctx.GlobalIsSet(CacheGCFlag.Name) {
-		cfg.TrieCache = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheGCFlag.Name) / 100
+	if ctx.GlobalIsSet(CacheFlag.Name) || ctx.GlobalIsSet(CacheTrieFlag.Name) {
+		cfg.TrieCleanCache = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheTrieFlag.Name) / 100
 	}
-	if ctx.GlobalIsSet(MinerThreadsFlag.Name) {
-		cfg.MinerThreads = ctx.GlobalInt(MinerThreadsFlag.Name)
+	if ctx.GlobalIsSet(CacheFlag.Name) || ctx.GlobalIsSet(CacheGCFlag.Name) {
+		cfg.TrieDirtyCache = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheGCFlag.Name) / 100
 	}
 	if ctx.GlobalIsSet(DocRootFlag.Name) {
 		cfg.DocRoot = ctx.GlobalString(DocRootFlag.Name)
 	}
-	if ctx.GlobalIsSet(ExtraDataFlag.Name) {
-		cfg.ExtraData = []byte(ctx.GlobalString(ExtraDataFlag.Name))
-	}
-	if ctx.GlobalIsSet(GasPriceFlag.Name) {
-		cfg.GasPrice = GlobalBig(ctx, GasPriceFlag.Name)
-	}
 	if ctx.GlobalIsSet(VMEnableDebugFlag.Name) {
 		// TODO(fjl): force-enable this in --dev mode
 		cfg.EnablePreimageRecording = ctx.GlobalBool(VMEnableDebugFlag.Name)
+	}
+
+	if ctx.GlobalIsSet(EWASMInterpreterFlag.Name) {
+		cfg.EWASMInterpreter = ctx.GlobalString(EWASMInterpreterFlag.Name)
+	}
+
+	if ctx.GlobalIsSet(EVMInterpreterFlag.Name) {
+		cfg.EVMInterpreter = ctx.GlobalString(EVMInterpreterFlag.Name)
+	}
+	if ctx.GlobalIsSet(RPCGlobalGasCap.Name) {
+		cfg.RPCGasCap = new(big.Int).SetUint64(ctx.GlobalUint64(RPCGlobalGasCap.Name))
 	}
 
 	// Override any default configs for hard coded networks.
@@ -1029,11 +1393,6 @@ func SetEntropyConfig(ctx *cli.Context, stack *node.Node, cfg *entropy.Config) {
 			cfg.NetworkId = 3
 		}
 		cfg.Genesis = genesis.DefaultTestnetGenesisBlock()
-	case ctx.GlobalBool(RinkebyFlag.Name):
-		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
-			cfg.NetworkId = 4
-		}
-		cfg.Genesis = genesis.DefaultRinkebyGenesisBlock()
 	case ctx.GlobalBool(DeveloperFlag.Name):
 		if !ctx.GlobalIsSet(NetworkIdFlag.Name) {
 			cfg.NetworkId = 1337
@@ -1057,13 +1416,9 @@ func SetEntropyConfig(ctx *cli.Context, stack *node.Node, cfg *entropy.Config) {
 		log.Info("Using developer account", "address", developer.Address)
 
 		cfg.Genesis = genesis.DeveloperGenesisBlock(uint64(ctx.GlobalInt(DeveloperPeriodFlag.Name)), developer.Address)
-		if !ctx.GlobalIsSet(GasPriceFlag.Name) {
-			cfg.GasPrice = big.NewInt(1)
+		if !ctx.GlobalIsSet(MinerGasPriceFlag.Name) && !ctx.GlobalIsSet(MinerLegacyGasPriceFlag.Name) {
+			cfg.Miner.GasPrice = big.NewInt(1)
 		}
-	}
-	// TODO(fjl): move trie cache generations into config
-	if gen := ctx.GlobalInt(TrieCacheGenFlag.Name); gen > 0 {
-		state.MaxTrieCacheGen = uint16(gen)
 	}
 }
 
@@ -1074,11 +1429,173 @@ func SetDashboardConfig(ctx *cli.Context, cfg *dashboard.Config) {
 	cfg.Refresh = ctx.GlobalDuration(DashboardRefreshFlag.Name)
 }
 
+// RegisterEthService adds an Ethereum client to the stack.
+func RegisterEntropyService(stack *node.Node, cfg *entropy.Config) {
+	var err error
+	//if cfg.SyncMode == downloader.LightSync {
+	//	err = stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
+	//		return les.New(ctx, cfg)
+	//	})
+	//} else {
+	err = stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
+		fullNode, err := entropy.New(ctx, cfg)
+		//if fullNode != nil && cfg.LightServ > 0 {
+		//	ls, _ := les.NewLesServer(fullNode, cfg)
+		//	fullNode.AddLesServer(ls)
+		//}
+		return fullNode, err
+	})
+	//}
+	if err != nil {
+		Fatalf("Failed to register the Ethereum service: %v", err)
+	}
+}
+
 // RegisterDashboardService adds a dashboard to the stack.
 func RegisterDashboardService(stack *node.Node, cfg *dashboard.Config, commit string) {
 	stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
 		return dashboard.New(cfg, commit, ctx.ResolvePath("logs")), nil
 	})
+}
+
+// RegisterShhService configures Whisper and adds it to the given node.
+//func RegisterShhService(stack *node.Node, cfg *whisper.Config) {
+//	if err := stack.Register(func(n *node.ServiceContext) (node.Service, error) {
+//		return whisper.New(cfg), nil
+//	}); err != nil {
+//		Fatalf("Failed to register the Whisper service: %v", err)
+//	}
+//}
+
+//RegisterEntropyStatsService configures the Ethereum Stats daemon and adds it to
+//the given node.
+func RegisterEntropyStatsService(stack *node.Node, url string) {
+	if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
+		// Retrieve both eth and les services
+		var ethServ *entropy.Entropy
+		ctx.Service(&ethServ)
+
+		//var lesServ *les.LightEthereum
+		//ctx.Service(&lesServ)
+
+		return entropystats.New(url, ethServ /*, lesServ*/)
+	}); err != nil {
+		Fatalf("Failed to register the Ethereum Stats service: %v", err)
+	}
+}
+
+func SetupMetrics(ctx *cli.Context) {
+	if metrics.Enabled {
+		log.Info("Enabling metrics collection")
+		var (
+			enableExport = ctx.GlobalBool(MetricsEnableInfluxDBFlag.Name)
+			endpoint     = ctx.GlobalString(MetricsInfluxDBEndpointFlag.Name)
+			database     = ctx.GlobalString(MetricsInfluxDBDatabaseFlag.Name)
+			username     = ctx.GlobalString(MetricsInfluxDBUsernameFlag.Name)
+			password     = ctx.GlobalString(MetricsInfluxDBPasswordFlag.Name)
+		)
+
+		if enableExport {
+			tagsMap := SplitTagsFlag(ctx.GlobalString(MetricsInfluxDBTagsFlag.Name))
+
+			log.Info("Enabling metrics export to InfluxDB")
+
+			go influxdb.InfluxDBWithTags(metrics.DefaultRegistry, 10*time.Second, endpoint, database, username, password, "geth.", tagsMap)
+		}
+	}
+}
+
+func SplitTagsFlag(tagsFlag string) map[string]string {
+	tags := strings.Split(tagsFlag, ",")
+	tagsMap := map[string]string{}
+
+	for _, t := range tags {
+		if t != "" {
+			kv := strings.Split(t, "=")
+
+			if len(kv) == 2 {
+				tagsMap[kv[0]] = kv[1]
+			}
+		}
+	}
+
+	return tagsMap
+}
+
+// MakeChainDatabase open an LevelDB using the flags passed to the client and will hard crash if it fails.
+func MakeChainDatabase(ctx *cli.Context, stack *node.Node) database.Database {
+	var (
+		cache   = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheDatabaseFlag.Name) / 100
+		handles = makeDatabaseHandles()
+	)
+	name := "chaindata"
+	if ctx.GlobalString(SyncModeFlag.Name) == "light" {
+		name = "lightchaindata"
+	}
+	chainDb, err := stack.OpenDatabaseWithFreezer(name, cache, handles, ctx.GlobalString(AncientFlag.Name), "")
+	if err != nil {
+		Fatalf("Could not open database: %v", err)
+	}
+	return chainDb
+}
+
+func MakeGenesis(ctx *cli.Context) *genesis.Genesis {
+	var genesisObj *genesis.Genesis
+	switch {
+	case ctx.GlobalBool(TestnetFlag.Name):
+		genesisObj = genesis.DefaultTestnetGenesisBlock()
+	case ctx.GlobalBool(DeveloperFlag.Name):
+		Fatalf("Developer chains are ephemeral")
+	}
+	return genesisObj
+}
+
+// MakeChain creates a chain manager from set command line flags.
+func MakeChain(ctx *cli.Context, stack *node.Node) (chain *blockchain.BlockChain, chainDb database.Database) {
+	var err error
+	chainDb = MakeChainDatabase(ctx, stack)
+	configObj, _, err := genesis.SetupGenesisBlock(chainDb, MakeGenesis(ctx))
+	if err != nil {
+		Fatalf("%v", err)
+	}
+	var engine consensus.Engine
+	if configObj.Clique != nil {
+		engine = clique.New(configObj.Clique, chainDb)
+	} else {
+		engine = ethash.NewFaker()
+		if !ctx.GlobalBool(FakePoWFlag.Name) {
+			engine = ethash.New(ethash.Config{
+				CacheDir:       stack.ResolvePath(entropy.DefaultConfig.Ethash.CacheDir),
+				CachesInMem:    entropy.DefaultConfig.Ethash.CachesInMem,
+				CachesOnDisk:   entropy.DefaultConfig.Ethash.CachesOnDisk,
+				DatasetDir:     stack.ResolvePath(entropy.DefaultConfig.Ethash.DatasetDir),
+				DatasetsInMem:  entropy.DefaultConfig.Ethash.DatasetsInMem,
+				DatasetsOnDisk: entropy.DefaultConfig.Ethash.DatasetsOnDisk,
+			}, nil, false)
+		}
+	}
+	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "full" && gcmode != "archive" {
+		Fatalf("--%s must be either 'full' or 'archive'", GCModeFlag.Name)
+	}
+	cache := &blockchain.CacheConfig{
+		TrieCleanLimit:      entropy.DefaultConfig.TrieCleanCache,
+		TrieCleanNoPrefetch: ctx.GlobalBool(CacheNoPrefetchFlag.Name),
+		TrieDirtyLimit:      entropy.DefaultConfig.TrieDirtyCache,
+		TrieDirtyDisabled:   ctx.GlobalString(GCModeFlag.Name) == "archive",
+		TrieTimeLimit:       entropy.DefaultConfig.TrieTimeout,
+	}
+	if ctx.GlobalIsSet(CacheFlag.Name) || ctx.GlobalIsSet(CacheTrieFlag.Name) {
+		cache.TrieCleanLimit = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheTrieFlag.Name) / 100
+	}
+	if ctx.GlobalIsSet(CacheFlag.Name) || ctx.GlobalIsSet(CacheGCFlag.Name) {
+		cache.TrieDirtyLimit = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheGCFlag.Name) / 100
+	}
+	vmcfg := evm.Config{EnablePreimageRecording: ctx.GlobalBool(VMEnableDebugFlag.Name)}
+	chain, err = blockchain.NewBlockChain(chainDb, cache, configObj, engine, vmcfg, nil)
+	if err != nil {
+		Fatalf("Can't create BlockChain: %v", err)
+	}
+	return chain, chainDb
 }
 
 // MakeConsolePreloads retrieves the absolute paths for the console JavaScript
@@ -1089,7 +1606,7 @@ func MakeConsolePreloads(ctx *cli.Context) []string {
 		return nil
 	}
 	// Otherwise resolve absolute paths and return them
-	preloads := []string{}
+	var preloads []string
 
 	assets := ctx.GlobalString(JSpathFlag.Name)
 	for _, file := range strings.Split(ctx.GlobalString(PreloadJSFlag.Name), ",") {
@@ -1098,20 +1615,26 @@ func MakeConsolePreloads(ctx *cli.Context) []string {
 	return preloads
 }
 
-// MakePasswordList reads password lines from the file specified by the global --password flag.
-func MakePasswordList(ctx *cli.Context) []string {
-	path := ctx.GlobalString(PasswordFileFlag.Name)
-	if path == "" {
-		return nil
+// MigrateFlags sets the global flag from a local flag when it's set.
+// This is a temporary function used for migrating old command/flags to the
+// new format.
+//
+// e.g. geth account new --keystore /tmp/mykeystore --lightkdf
+//
+// is equivalent after calling this method with:
+//
+// geth --keystore /tmp/mykeystore --lightkdf account new
+//
+// This allows the use of the existing configuration functionality.
+// When all flags are migrated this function can be removed and the existing
+// configuration functionality must be changed that is uses local flags
+func MigrateFlags(action func(ctx *cli.Context) error) func(*cli.Context) error {
+	return func(ctx *cli.Context) error {
+		for _, name := range ctx.FlagNames() {
+			if ctx.IsSet(name) {
+				ctx.GlobalSet(name, ctx.String(name))
+			}
+		}
+		return action(ctx)
 	}
-	text, err := ioutil.ReadFile(path)
-	if err != nil {
-		Fatalf("Failed to read password file: %v", err)
-	}
-	lines := strings.Split(string(text), "\n")
-	// Sanitise DOS line endings.
-	for i := range lines {
-		lines[i] = strings.TrimRight(lines[i], "\r")
-	}
-	return lines
 }

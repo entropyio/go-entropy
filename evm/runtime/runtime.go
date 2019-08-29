@@ -5,12 +5,12 @@ import (
 	"math/big"
 	"time"
 
-	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/state"
+	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
-	"github.com/entropyio/go-entropy/evm"
 	"github.com/entropyio/go-entropy/config"
-	"github.com/entropyio/go-entropy/database"
+	"github.com/entropyio/go-entropy/evm"
 )
 
 // Config is a basic type specifying certain configuration flags for running
@@ -38,6 +38,9 @@ func setDefaults(cfg *Config) {
 		cfg.ChainConfig = &config.ChainConfig{
 			ChainID:        big.NewInt(1),
 			HomesteadBlock: new(big.Int),
+			EIP150Block:    new(big.Int),
+			EIP155Block:    new(big.Int),
+			EIP158Block:    new(big.Int),
 		}
 	}
 
@@ -78,7 +81,7 @@ func Execute(code, input []byte, cfg *Config) ([]byte, *state.StateDB, error) {
 	setDefaults(cfg)
 
 	if cfg.State == nil {
-		cfg.State, _ = state.New(common.Hash{}, state.NewDatabase(database.NewMemDatabase()))
+		cfg.State, _ = state.New(common.Hash{}, state.NewDatabase(mapper.NewMemoryDatabase()))
 	}
 	var (
 		address = common.BytesToAddress([]byte("contract"))
@@ -108,7 +111,7 @@ func Create(input []byte, cfg *Config) ([]byte, common.Address, uint64, error) {
 	setDefaults(cfg)
 
 	if cfg.State == nil {
-		cfg.State, _ = state.New(common.Hash{}, state.NewDatabase(database.NewMemDatabase()))
+		cfg.State, _ = state.New(common.Hash{}, state.NewDatabase(mapper.NewMemoryDatabase()))
 	}
 	var (
 		vmenv  = NewEnv(cfg)

@@ -596,7 +596,7 @@ func (s *State) Prompt(prompt string) (string, error) {
 
 // PromptWithSuggestion displays prompt and an editable text with cursor at
 // given position. The cursor will be set to the end of the line if given position
-// is negative or greater than length of text. Returns a line of user input, not
+// is negative or greater than length of text (in runes). Returns a line of user input, not
 // including a trailing newline character. An io.EOF error is returned if the user
 // signals end-of-file by pressing Ctrl-D.
 func (s *State) PromptWithSuggestion(prompt string, text string, pos int) (string, error) {
@@ -631,8 +631,8 @@ func (s *State) PromptWithSuggestion(prompt string, text string, pos int) (strin
 
 	defer s.stopPrompt()
 
-	if pos < 0 || len(text) < pos {
-		pos = len(text)
+	if pos < 0 || len(line) < pos {
+		pos = len(line)
 	}
 	if len(line) > 0 {
 		err := s.refresh(p, line, pos)
@@ -858,13 +858,13 @@ mainLoop:
 			case tab: // Tab completion
 				line, pos, next, err = s.tabComplete(p, line, pos)
 				goto haveNext
-				// Catch keys that do nothing, but you don't want them to beep
+			// Catch keys that do nothing, but you don't want them to beep
 			case esc:
 				// DO NOTHING
-				// Unused keys
+			// Unused keys
 			case ctrlG, ctrlO, ctrlQ, ctrlS, ctrlV, ctrlX, ctrlZ:
 				fallthrough
-				// Catch unhandled control codes (anything <= 31)
+			// Catch unhandled control codes (anything <= 31)
 			case 0, 28, 29, 30, 31:
 				fmt.Print(beep)
 			default:
@@ -1137,11 +1137,11 @@ mainLoop:
 				pos = 0
 				fmt.Print(prompt)
 				s.restartPrompt()
-				// Unused keys
+			// Unused keys
 			case esc, tab, ctrlA, ctrlB, ctrlE, ctrlF, ctrlG, ctrlK, ctrlN, ctrlO, ctrlP, ctrlQ, ctrlR, ctrlS,
 				ctrlT, ctrlU, ctrlV, ctrlW, ctrlX, ctrlY, ctrlZ:
 				fallthrough
-				// Catch unhandled control codes (anything <= 31)
+			// Catch unhandled control codes (anything <= 31)
 			case 0, 28, 29, 30, 31:
 				fmt.Print(beep)
 			default:

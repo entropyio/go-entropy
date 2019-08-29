@@ -12,6 +12,10 @@ import (
 // NotFound is returned by API methods if the requested item does not exist.
 var NotFound = errors.New("not found")
 
+// TODO: move subscription to package event
+
+// Subscription represents an event subscription where events are
+// delivered on a data channel.
 type Subscription interface {
 	// Unsubscribe cancels the sending of events to the data channel
 	// and closes the error channel.
@@ -123,9 +127,9 @@ type FilterQuery struct {
 	// Examples:
 	// {} or nil          matches any topic list
 	// {{A}}              matches topic A in first position
-	// {{}, {B}}          matches any topic in first position, B in second position
-	// {{A}, {B}}         matches topic A in first position, B in second position
-	// {{A, B}}, {C, D}}  matches topic (A OR B) in first position, (C OR D) in second position
+	// {{}, {B}}          matches any topic in first position AND B in second position
+	// {{A}, {B}}         matches topic A in first position AND B in second position
+	// {{A, B}, {C, D}}   matches topic (A OR B) in first position AND (C OR D) in second position
 	Topics [][]common.Hash
 }
 

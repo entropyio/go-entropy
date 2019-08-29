@@ -23,7 +23,7 @@ func TestContextDatabases(t *testing.T) {
 	}
 	// Request the opening/creation of a database and ensure it persists to disk
 	ctx := &ServiceContext{Config: &Config{Name: "unit-test", DataDir: dir}}
-	db, err := ctx.OpenDatabase("persistent", 0, 0)
+	db, err := ctx.OpenDatabase("persistent", 0, 0, "")
 	if err != nil {
 		t.Fatalf("failed to open persistent database: %v", err)
 	}
@@ -34,7 +34,7 @@ func TestContextDatabases(t *testing.T) {
 	}
 	// Request th opening/creation of an ephemeral database and ensure it's not persisted
 	ctx = &ServiceContext{Config: &Config{DataDir: ""}}
-	db, err = ctx.OpenDatabase("ephemeral", 0, 0)
+	db, err = ctx.OpenDatabase("ephemeral", 0, 0, "")
 	if err != nil {
 		t.Fatalf("failed to open ephemeral database: %v", err)
 	}
@@ -51,6 +51,7 @@ func TestContextServices(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create protocol stack: %v", err)
 	}
+	defer stack.Close()
 	// Define a verifier that ensures a NoopA is before it and NoopB after
 	verifier := func(ctx *ServiceContext) (Service, error) {
 		var objA *NoopServiceA

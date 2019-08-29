@@ -1,6 +1,7 @@
 package rlputil
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 )
@@ -25,12 +26,12 @@ func (x *MyCoolType) EncodeRLP(w io.Writer) (err error) {
 
 func ExampleEncoder() {
 	var t *MyCoolType // t is nil pointer to MyCoolType
-	bytes, _ := EncodeToBytes(t)
-	fmt.Printf("%v → %X\n", t, bytes)
-
+	bs, _ := EncodeToBytes(t)
+	fmt.Printf("%v → %X\n", t, bs)
+	buf := new(bytes.Buffer)
 	t = &MyCoolType{Name: "foobar", a: 5, b: 6}
-	bytes, _ = EncodeToBytes(t)
-	fmt.Printf("%v → %X\n", t, bytes)
+	Encode(buf, t)
+	fmt.Printf("%v → %X\n", t, buf)
 
 	// Output:
 	// <nil> → C28080

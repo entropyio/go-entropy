@@ -1,9 +1,11 @@
 package common
 
 import (
+	"database/sql/driver"
 	"encoding/json"
 
 	"math/big"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -97,8 +99,8 @@ func TestAddressUnmarshalJSON(t *testing.T) {
 			if test.ShouldErr {
 				t.Errorf("test #%d: expected error, got none", i)
 			}
-			if v.Big().Cmp(test.Output) != 0 {
-				t.Errorf("test #%d: address mismatch: have %v, want %v", i, v.Big(), test.Output)
+			if got := new(big.Int).SetBytes(v.Bytes()); got.Cmp(test.Output) != 0 {
+				t.Errorf("test #%d: address mismatch: have %v, want %v", i, got, test.Output)
 			}
 		}
 	}

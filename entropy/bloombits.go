@@ -3,13 +3,13 @@ package entropy
 import (
 	"time"
 
+	"context"
 	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/blockchain/bloombits"
 	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/bitutil"
-	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/database"
 )
 
@@ -33,7 +33,7 @@ const (
 
 // startBloomHandlers starts a batch of goroutines to accept bloom bit database
 // retrievals from possibly a range of filters and serving the data to satisfy.
-func (s *Entropy) startBloomHandlers() {
+func (s *Entropy) startBloomHandlers(sectionSize uint64) {
 	for i := 0; i < bloomServiceThreads; i++ {
 		go func() {
 			for {
@@ -45,9 +45,9 @@ func (s *Entropy) startBloomHandlers() {
 					task := <-request
 					task.Bitsets = make([][]byte, len(task.Sections))
 					for i, section := range task.Sections {
-						head := mapper.ReadCanonicalHash(s.chainDb, (section+1)*config.BloomBitsBlocks-1)
+						head := mapper.ReadCanonicalHash(s.chainDb, (section+1)*sectionSize-1)
 						if compVector, err := mapper.ReadBloomBits(s.chainDb, task.Bit, section, head); err == nil {
-							if blob, err := bitutil.DecompressBytes(compVector, int(config.BloomBitsBlocks)/8); err == nil {
+							if blob, err := bitutil.DecompressBytes(compVector, int(sectionSize/8)); err == nil {
 								task.Bitsets[i] = blob
 							} else {
 								task.Error = err
@@ -64,10 +64,6 @@ func (s *Entropy) startBloomHandlers() {
 }
 
 const (
-	// bloomConfirms is the number of confirmation blocks before a bloom section is
-	// considered probably final and its rotated bits are calculated.
-	bloomConfirms = 256
-
 	// bloomThrottling is the time to wait between processing two consecutive index
 	// sections. It's useful during chain upgrades to prevent disk overload.
 	bloomThrottling = 100 * time.Millisecond
@@ -87,19 +83,19 @@ type BloomIndexer struct {
 
 // NewBloomIndexer returns a chain indexer that generates bloom bits data for the
 // canonical chain for fast logs filtering.
-func NewBloomIndexer(db database.Database, size uint64) *blockchain.ChainIndexer {
+func NewBloomIndexer(db database.Database, size, confirms uint64) *blockchain.ChainIndexer {
 	backend := &BloomIndexer{
 		db:   db,
 		size: size,
 	}
-	table := database.NewTable(db, string(mapper.BloomBitsIndexPrefix))
+	table := mapper.NewTable(db, string(mapper.BloomBitsIndexPrefix))
 
-	return blockchain.NewChainIndexer(db, table, backend, size, bloomConfirms, bloomThrottling)
+	return blockchain.NewChainIndexer(db, table, backend, size, confirms, bloomThrottling, "bloombits")
 }
 
 // Reset implements blockchain.ChainIndexerBackend, starting a new bloombits index
 // section.
-func (b *BloomIndexer) Reset(section uint64, lastSectionHead common.Hash) error {
+func (b *BloomIndexer) Reset(ctx context.Context, section uint64, lastSectionHead common.Hash) error {
 	gen, err := bloombits.NewGenerator(uint(b.size))
 	b.gen, b.section, b.head = gen, section, common.Hash{}
 	return err
@@ -107,9 +103,10 @@ func (b *BloomIndexer) Reset(section uint64, lastSectionHead common.Hash) error 
 
 // Process implements blockchain.ChainIndexerBackend, adding a new header's bloom into
 // the index.
-func (b *BloomIndexer) Process(header *model.Header) {
+func (b *BloomIndexer) Process(ctx context.Context, header *model.Header) error {
 	b.gen.AddBloom(uint(header.Number.Uint64()-b.section*b.size), header.Bloom)
 	b.head = header.Hash()
+	return nil
 }
 
 // Commit implements blockchain.ChainIndexerBackend, finalizing the bloom section and

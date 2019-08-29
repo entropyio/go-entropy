@@ -5,9 +5,9 @@ import (
 
 	"encoding/binary"
 
+	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/database"
 	"github.com/entropyio/go-entropy/database/trie"
 	"github.com/stretchr/testify/assert"
 )
@@ -60,7 +60,7 @@ func mockNewClaudeContext(db trie.TrieDatabase) *model.ClaudeContext {
 	return claudeContext
 }
 
-func setMintCntTrie(epochID int64, candidate common.Address, mintCntTrie *trie.Trie, count int64) {
+func setMintCntTrie(epochID uint64, candidate common.Address, mintCntTrie *trie.Trie, count uint64) {
 	key := make([]byte, 8)
 	binary.BigEndian.PutUint64(key, uint64(epochID))
 	cntBytes := make([]byte, 8)
@@ -68,35 +68,35 @@ func setMintCntTrie(epochID int64, candidate common.Address, mintCntTrie *trie.T
 	mintCntTrie.TryUpdate(append(key, candidate.Bytes()...), cntBytes)
 }
 
-func getMintCnt(epochID int64, candidate common.Address, mintCntTrie *trie.Trie) int64 {
+func getMintCnt(epochID uint64, candidate common.Address, mintCntTrie *trie.Trie) uint64 {
 	key := make([]byte, 8)
 	binary.BigEndian.PutUint64(key, uint64(epochID))
 	cntBytes := mintCntTrie.Get(append(key, candidate.Bytes()...))
 	if cntBytes == nil {
 		return 0
 	} else {
-		return int64(binary.BigEndian.Uint64(cntBytes))
+		return binary.BigEndian.Uint64(cntBytes)
 	}
 }
 
 func TestUpdateMintCnt(t *testing.T) {
-	db := *trie.NewDatabase(database.NewMemDatabase())
+	db := *trie.NewDatabase(mapper.NewMemoryDatabase())
 	dposContext := mockNewClaudeContext(db)
 
 	// new block still in the same epoch with current block, but newMiner is the first time to mint in the epoch
-	lastTime := int64(epochInterval)
+	lastTime := epochInterval
 
 	miner := common.HexToAddress("0xa60a3886b552ff9992cfcd208ec1152079e046c2")
-	blockTime := int64(epochInterval + blockInterval)
+	blockTime := epochInterval + blockInterval
 
 	beforeUpdateCnt := getMintCnt(blockTime/epochInterval, miner, dposContext.MintCntTrie())
 	updateMintCnt(lastTime, blockTime, miner, dposContext)
 	afterUpdateCnt := getMintCnt(blockTime/epochInterval, miner, dposContext.MintCntTrie())
-	assert.Equal(t, int64(0), beforeUpdateCnt)
-	assert.Equal(t, int64(1), afterUpdateCnt)
+	assert.Equal(t, uint64(0), beforeUpdateCnt)
+	assert.Equal(t, uint64(1), afterUpdateCnt)
 
 	// new block still in the same epoch with current block, and newMiner has mint block before in the epoch
-	setMintCntTrie(blockTime/epochInterval, miner, dposContext.MintCntTrie(), int64(1))
+	setMintCntTrie(blockTime/epochInterval, miner, dposContext.MintCntTrie(), uint64(1))
 
 	blockTime = epochInterval + blockInterval*4
 
@@ -104,8 +104,8 @@ func TestUpdateMintCnt(t *testing.T) {
 	beforeUpdateCnt = getMintCnt(blockTime/epochInterval, miner, dposContext.MintCntTrie())
 	updateMintCnt(lastTime, blockTime, miner, dposContext)
 	afterUpdateCnt = getMintCnt(blockTime/epochInterval, miner, dposContext.MintCntTrie())
-	assert.Equal(t, int64(1), beforeUpdateCnt)
-	assert.Equal(t, int64(2), afterUpdateCnt)
+	assert.Equal(t, uint64(1), beforeUpdateCnt)
+	assert.Equal(t, uint64(2), afterUpdateCnt)
 
 	// new block come to a new epoch
 	blockTime = epochInterval * 2

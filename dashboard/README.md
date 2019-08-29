@@ -12,7 +12,7 @@ The client's UI uses [React][React] with JSX syntax, which is validated by the [
 As the dashboard depends on certain NPM packages (which are not included in the `go-entropy` repo), these need to be installed first:
 
 ```
-$ (cd dashboard/assets && yarn install && yarn flow)
+$ (cd dashboard/assets && yarn install --ignore-engines && yarn flow)
 ```
 
 Normally the dashboard assets are bundled into Entropy via `go-bindata` to avoid external dependencies. Rebuilding Entropy after each UI modification however is not feasible from a developer perspective. Instead, we can run `yarn dev` to watch for file system changes and refresh the browser automatically.

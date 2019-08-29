@@ -61,7 +61,16 @@ type unlocked struct {
 // NewKeyStore creates a keystore for the given directory.
 func NewKeyStore(keydir string, scryptN, scryptP int) *KeyStore {
 	keydir, _ = filepath.Abs(keydir)
-	ks := &KeyStore{storage: &keyStorePassphrase{keydir, scryptN, scryptP}}
+	ks := &KeyStore{storage: &keyStorePassphrase{keydir, scryptN, scryptP, false}}
+	ks.init(keydir)
+	return ks
+}
+
+// NewPlaintextKeyStore creates a keystore for the given directory.
+// Deprecated: Use NewKeyStore.
+func NewPlaintextKeyStore(keydir string) *KeyStore {
+	keydir, _ = filepath.Abs(keydir)
+	ks := &KeyStore{storage: &keyStorePlain{keydir}}
 	ks.init(keydir)
 	return ks
 }
@@ -111,8 +120,10 @@ func (ks *KeyStore) refreshWallets() {
 	accs := ks.cache.accounts()
 
 	// Transform the current list of wallets into the new one
-	wallets := make([]account.Wallet, 0, len(accs))
-	events := []account.WalletEvent{}
+	var (
+		wallets = make([]account.Wallet, 0, len(accs))
+		events  []account.WalletEvent
+	)
 
 	for _, accountObj := range accs {
 		// Drop wallets while they were in front of the next account

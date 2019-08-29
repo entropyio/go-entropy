@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/database"
+	"github.com/entropyio/go-entropy/database/memorydb"
 	"math/rand"
 	"testing"
 )
@@ -96,18 +96,21 @@ func TestNodeIteratorCoverage(t *testing.T) {
 			t.Errorf("failed to retrieve reported node %x: %v", hash, err)
 		}
 	}
-	for hash, obj := range db.nodes {
+	for hash, obj := range db.dirties {
 		if obj != nil && hash != (common.Hash{}) {
 			if _, ok := hashes[hash]; !ok {
 				t.Errorf("state entry not reported %x", hash)
 			}
 		}
 	}
-	for _, key := range db.diskdb.(*database.MemDatabase).Keys() {
+	it := db.diskdb.NewIterator()
+	for it.Next() {
+		key := it.Key()
 		if _, ok := hashes[common.BytesToHash(key)]; !ok {
 			t.Errorf("state entry not reported %x", key)
 		}
 	}
+	it.Release()
 }
 
 type kvs struct{ k, v string }
@@ -272,7 +275,7 @@ func TestIteratorContinueAfterErrorDisk(t *testing.T)    { testIteratorContinueA
 func TestIteratorContinueAfterErrorMemonly(t *testing.T) { testIteratorContinueAfterError(t, true) }
 
 func testIteratorContinueAfterError(t *testing.T, memonly bool) {
-	diskdb := database.NewMemDatabase()
+	diskdb := memorydb.New()
 	triedb := NewDatabase(diskdb)
 
 	tr, _ := New(common.Hash{}, triedb)
@@ -292,7 +295,11 @@ func testIteratorContinueAfterError(t *testing.T, memonly bool) {
 	if memonly {
 		memKeys = triedb.Nodes()
 	} else {
-		diskKeys = diskdb.Keys()
+		it := diskdb.NewIterator()
+		for it.Next() {
+			diskKeys = append(diskKeys, it.Key())
+		}
+		it.Release()
 	}
 	for i := 0; i < 20; i++ {
 		// Create trie that will load all nodes from DB.
@@ -316,8 +323,8 @@ func testIteratorContinueAfterError(t *testing.T, memonly bool) {
 			}
 		}
 		if memonly {
-			robj = triedb.nodes[rkey]
-			delete(triedb.nodes, rkey)
+			robj = triedb.dirties[rkey]
+			delete(triedb.dirties, rkey)
 		} else {
 			rval, _ = diskdb.Get(rkey[:])
 			diskdb.Delete(rkey[:])
@@ -333,7 +340,7 @@ func testIteratorContinueAfterError(t *testing.T, memonly bool) {
 
 		// Add the node back and continue iteration.
 		if memonly {
-			triedb.nodes[rkey] = robj
+			triedb.dirties[rkey] = robj
 		} else {
 			diskdb.Put(rkey[:], rval)
 		}
@@ -359,7 +366,7 @@ func TestIteratorContinueAfterSeekErrorMemonly(t *testing.T) {
 
 func testIteratorContinueAfterSeekError(t *testing.T, memonly bool) {
 	// Commit test trie to db, then remove the node containing "bars".
-	diskdb := database.NewMemDatabase()
+	diskdb := memorydb.New()
 	triedb := NewDatabase(diskdb)
 
 	ctr, _ := New(common.Hash{}, triedb)
@@ -376,8 +383,8 @@ func testIteratorContinueAfterSeekError(t *testing.T, memonly bool) {
 		barNodeObj  *cachedNode
 	)
 	if memonly {
-		barNodeObj = triedb.nodes[barNodeHash]
-		delete(triedb.nodes, barNodeHash)
+		barNodeObj = triedb.dirties[barNodeHash]
+		delete(triedb.dirties, barNodeHash)
 	} else {
 		barNodeBlob, _ = diskdb.Get(barNodeHash[:])
 		diskdb.Delete(barNodeHash[:])
@@ -394,7 +401,7 @@ func testIteratorContinueAfterSeekError(t *testing.T, memonly bool) {
 	}
 	// Reinsert the missing node.
 	if memonly {
-		triedb.nodes[barNodeHash] = barNodeObj
+		triedb.dirties[barNodeHash] = barNodeObj
 	} else {
 		diskdb.Put(barNodeHash[:], barNodeBlob)
 	}

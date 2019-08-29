@@ -6,7 +6,7 @@ import (
 	"reflect"
 	"strings"
 
-	"github.com/naoina/go-stringutil"
+	stringutil "github.com/naoina/go-stringutil"
 	"github.com/naoina/toml/ast"
 )
 
