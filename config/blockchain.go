@@ -207,6 +207,7 @@ type ChainConfig struct {
 	ByzantiumBlock      *big.Int `json:"byzantiumBlock,omitempty"`      // Byzantium switch block (nil = no fork, 0 = already on byzantium)
 	ConstantinopleBlock *big.Int `json:"constantinopleBlock,omitempty"` // Constantinople switch block (nil = no fork, 0 = already activated)
 	PetersburgBlock     *big.Int `json:"petersburgBlock,omitempty"`     // Petersburg switch block (nil = same as Constantinople)
+	IstanbulBlock       *big.Int `json:"istanbulBlock,omitempty"`       // Istanbul switch block (nil = no fork, 0 = already on istanbul)
 	EWASMBlock          *big.Int `json:"ewasmBlock,omitempty"`          // EWASM switch block (nil = no fork, 0 = already activated)
 
 	// Various consensus engines
@@ -261,7 +262,7 @@ func (cc *ChainConfig) String() string {
 	default:
 		engine = "unknown"
 	}
-	return fmt.Sprintf("{ChainID: %v Homestead: %v EIP150: %v EIP155: %v EIP158: %v Byzantium: %v Constantinople: %v  Petersburg: %v Engine: %v}",
+	return fmt.Sprintf("{ChainID: %v Homestead: %v EIP150: %v EIP155: %v EIP158: %v Byzantium: %v Constantinople: %v  Petersburg: %v Istanbul: %v Engine: %v}",
 		cc.ChainID,
 		cc.HomesteadBlock,
 		cc.EIP150Block,
@@ -270,6 +271,7 @@ func (cc *ChainConfig) String() string {
 		cc.ByzantiumBlock,
 		cc.ConstantinopleBlock,
 		cc.PetersburgBlock,
+		cc.IstanbulBlock,
 		engine,
 	)
 }
@@ -311,6 +313,11 @@ func (cc *ChainConfig) IsPetersburg(num *big.Int) bool {
 	return isForked(cc.PetersburgBlock, num) || cc.PetersburgBlock == nil && isForked(cc.ConstantinopleBlock, num)
 }
 
+// IsIstanbul returns whether num is either equal to the Istanbul fork block or greater.
+func (cc *ChainConfig) IsIstanbul(num *big.Int) bool {
+	return isForked(cc.IstanbulBlock, num)
+}
+
 // IsEWASM returns whether num represents a block number after the EWASM fork
 func (cc *ChainConfig) IsEWASM(num *big.Int) bool {
 	return isForked(cc.EWASMBlock, num)
@@ -319,20 +326,56 @@ func (cc *ChainConfig) IsEWASM(num *big.Int) bool {
 // GasTable returns the gas table corresponding to the current phase (homestead or homestead reprice).
 //
 // The returned GasTable's fields shouldn't, under any circumstances, be changed.
-func (c *ChainConfig) GasTable(num *big.Int) GasTable {
+func (cc *ChainConfig) GasTable(num *big.Int) GasTable {
 	if num == nil {
 		return GasTableHomestead
 	}
 	switch {
-	case c.IsConstantinople(num):
+	case cc.IsConstantinople(num):
 		return GasTableConstantinople
-	case c.IsEIP158(num):
+	case cc.IsEIP158(num):
 		return GasTableEIP158
-	case c.IsEIP150(num):
+	case cc.IsEIP150(num):
 		return GasTableEIP150
 	default:
 		return GasTableHomestead
 	}
+}
+
+// CheckConfigForkOrder checks that we don't "skip" any forks, geth isn't pluggable enough
+// to guarantee that forks
+func (cc *ChainConfig) CheckConfigForkOrder() error {
+	type fork struct {
+		name  string
+		block *big.Int
+	}
+	var lastFork fork
+	for _, cur := range []fork{
+		{"homesteadBlock", cc.HomesteadBlock},
+		{"eip150Block", cc.EIP150Block},
+		{"eip155Block", cc.EIP155Block},
+		{"eip158Block", cc.EIP158Block},
+		{"byzantiumBlock", cc.ByzantiumBlock},
+		{"constantinopleBlock", cc.ConstantinopleBlock},
+		{"petersburgBlock", cc.PetersburgBlock},
+		{"istanbulBlock", cc.IstanbulBlock},
+	} {
+		if lastFork.name != "" {
+			// Next one must be higher number
+			if lastFork.block == nil && cur.block != nil {
+				return fmt.Errorf("unsupported fork ordering: %v not enabled, but %v enabled at %v",
+					lastFork.name, cur.name, cur.block)
+			}
+			if lastFork.block != nil && cur.block != nil {
+				if lastFork.block.Cmp(cur.block) > 0 {
+					return fmt.Errorf("unsupported fork ordering: %v enabled at %v, but %v enabled at %v",
+						lastFork.name, lastFork.block, cur.name, cur.block)
+				}
+			}
+		}
+		lastFork = cur
+	}
+	return nil
 }
 
 // CheckCompatible checks whether scheduled fork transitions have been imported
@@ -378,6 +421,9 @@ func (cc *ChainConfig) checkCompatible(newcfg *ChainConfig, head *big.Int) *Conf
 	}
 	if isForkIncompatible(cc.PetersburgBlock, newcfg.PetersburgBlock, head) {
 		return newCompatError("Petersburg fork block", cc.PetersburgBlock, newcfg.PetersburgBlock)
+	}
+	if isForkIncompatible(cc.IstanbulBlock, newcfg.IstanbulBlock, head) {
+		return newCompatError("Istanbul fork block", cc.IstanbulBlock, newcfg.IstanbulBlock)
 	}
 	if isForkIncompatible(cc.EWASMBlock, newcfg.EWASMBlock, head) {
 		return newCompatError("ewasm fork block", cc.EWASMBlock, newcfg.EWASMBlock)
@@ -446,9 +492,9 @@ func (err *ConfigCompatError) Error() string {
 // Rules is a one time interface meaning that it shouldn't be used in between transition
 // phases.
 type Rules struct {
-	ChainID                                     *big.Int
-	IsHomestead, IsEIP150, IsEIP155, IsEIP158   bool
-	IsByzantium, IsConstantinople, IsPetersburg bool
+	ChainID                                                 *big.Int
+	IsHomestead, IsEIP150, IsEIP155, IsEIP158               bool
+	IsByzantium, IsConstantinople, IsPetersburg, IsIstanbul bool
 }
 
 // Rules ensures c's ChainID is not nil.
@@ -466,5 +512,6 @@ func (c *ChainConfig) Rules(num *big.Int) Rules {
 		IsByzantium:      c.IsByzantium(num),
 		IsConstantinople: c.IsConstantinople(num),
 		IsPetersburg:     c.IsPetersburg(num),
+		IsIstanbul:       c.IsIstanbul(num),
 	}
 }

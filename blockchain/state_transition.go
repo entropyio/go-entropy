@@ -59,10 +59,10 @@ type Message interface {
 }
 
 // IntrinsicGas computes the 'intrinsic gas' for a message with the given data.
-func IntrinsicGas(data []byte, contractCreation, homestead bool) (uint64, error) {
+func IntrinsicGas(data []byte, contractCreation, isEIP155 bool, isEIP2028 bool) (uint64, error) {
 	// Set the starting gas for the raw transaction
 	var gas uint64
-	if contractCreation && homestead {
+	if contractCreation && isEIP155 {
 		gas = config.TxGasContractCreation
 	} else {
 		gas = config.TxGas
@@ -77,10 +77,14 @@ func IntrinsicGas(data []byte, contractCreation, homestead bool) (uint64, error)
 			}
 		}
 		// Make sure we don't exceed uint64 for all data combinations
-		if (math.MaxUint64-gas)/config.TxDataNonZeroGas < nz {
+		nonZeroGas := config.TxDataNonZeroGasFrontier
+		if isEIP2028 {
+			nonZeroGas = config.TxDataNonZeroGasEIP2028
+		}
+		if (math.MaxUint64-gas)/nonZeroGas < nz {
 			return 0, evm.ErrOutOfGas
 		}
-		gas += nz * config.TxDataNonZeroGas
+		gas += nz * nonZeroGas
 
 		z := uint64(len(data)) - nz
 		if (math.MaxUint64-gas)/config.TxDataZeroGas < z {
@@ -93,17 +97,17 @@ func IntrinsicGas(data []byte, contractCreation, homestead bool) (uint64, error)
 }
 
 // NewStateTransition initialises and returns a new state transition object.
-func NewStateTransition(evm *evm.EVM, msg Message, gp *GasPool) *StateTransition {
+func NewStateTransition(vm *evm.EVM, msg Message, gp *GasPool) *StateTransition {
 	transactionLog.Debugf("NewStateTransition: gas=%d, remainGas=%d, from=%X, to=%X",
 		msg.Gas(), gp.Gas(), msg.From(), msg.To())
 	return &StateTransition{
 		gp:       gp,
-		vm:       evm,
+		vm:       vm,
 		msg:      msg,
 		gasPrice: msg.GasPrice(),
 		value:    msg.Value(),
 		data:     msg.Data(),
-		state:    evm.StateDB,
+		state:    vm.StateDB,
 	}
 }
 
@@ -114,10 +118,10 @@ func NewStateTransition(evm *evm.EVM, msg Message, gp *GasPool) *StateTransition
 // the gas used (which includes gas refunds) and an error if it failed. An error always
 // indicates a blockchain error meaning that the message would always fail for that particular
 // state and would never be accepted within a block.
-func ApplyMessage(evm *evm.EVM, msg Message, gp *GasPool) ([]byte, uint64, bool, error) {
+func ApplyMessage(vm *evm.EVM, msg Message, gp *GasPool) ([]byte, uint64, bool, error) {
 	transactionLog.Debugf("ApplyMessage: nonce=%d, gas=%d, remainGas=%d, from=%X, to=%X",
 		msg.Nonce(), msg.Gas(), gp.Gas(), msg.From(), msg.To())
-	return NewStateTransition(evm, msg, gp).TransitionDb()
+	return NewStateTransition(vm, msg, gp).TransitionDb()
 }
 
 // to returns the recipient of the message.
@@ -181,10 +185,11 @@ func (st *StateTransition) TransitionDb() (ret []byte, usedGas uint64, failed bo
 	msg := st.msg
 	sender := evm.AccountRef(msg.From())
 	homestead := st.vm.ChainConfig().IsHomestead(st.vm.BlockNumber)
+	istanbul := st.vm.ChainConfig().IsIstanbul(st.vm.BlockNumber)
 	contractCreation := msg.To() == nil
 
 	// Pay intrinsic gas
-	gas, err := IntrinsicGas(st.data, contractCreation, homestead)
+	gas, err := IntrinsicGas(st.data, contractCreation, homestead, istanbul)
 	if err != nil {
 		return nil, 0, false, err
 	}

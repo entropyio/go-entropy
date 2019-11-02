@@ -16,11 +16,6 @@ entropy:
 	@echo "Done building."
 	@echo "Run \"$(GOBIN)/entropy\" to launch entropy."
 
-swarm:
-	build/env.sh go run build/ci.go install ./cmd/swarm
-	@echo "Done building."
-	@echo "Run \"$(GOBIN)/swarm\" to launch swarm."
-
 all:
 	build/env.sh go run build/ci.go install
 

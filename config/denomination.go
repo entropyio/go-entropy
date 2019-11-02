@@ -1,9 +1,9 @@
 package config
 
 // These are the multipliers for ether denominations.
-// Example: To get the wei value of an amount in 'douglas', use
+// Example: To get the wei value of an amount in 'gwei', use
 //
-//    new(big.Int).Mul(value, big.NewInt(config.Douglas))
+//    new(big.Int).Mul(value, big.NewInt(config.GWei))
 //
 const (
 	Wei      = 1

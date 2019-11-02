@@ -118,7 +118,8 @@ var (
 	// Note: yakkety is unsupported because it was officially deprecated on Launchpad.
 	// Note: zesty is unsupported because it was officially deprecated on Launchpad.
 	// Note: artful is unsupported because it was officially deprecated on Launchpad.
-	debDistros = []string{"trusty", "xenial", "bionic", "cosmic", "disco"}
+	// Note: cosmic is unsupported because it was officially deprecated on Launchpad.
+	debDistros = []string{"trusty", "xenial", "bionic", "disco", "eoan"}
 )
 
 var GOBIN, _ = filepath.Abs(filepath.Join("build", "bin"))
@@ -194,7 +195,6 @@ func doInstall(cmdline []string) {
 	if flag.NArg() > 0 {
 		packages = flag.Args()
 	}
-	packages = build.ExpandPackagesNoVendor(packages)
 
 	if *arch == "" || *arch == runtime.GOARCH {
 		goinstall := goTool("install", buildFlags(env)...)
@@ -291,13 +291,12 @@ func doTest(cmdline []string) {
 	if len(flag.CommandLine.Args()) > 0 {
 		packages = flag.CommandLine.Args()
 	}
-	packages = build.ExpandPackagesNoVendor(packages)
 
 	// Run the actual tests.
 	// Test a single package at a time. CI builders are slow
 	// and some tests run into timeouts under load.
 	gotest := goTool("test", buildFlags(env)...)
-	gotest.Args = append(gotest.Args, "-p", "1", "-timeout", "5m")
+	gotest.Args = append(gotest.Args, "-p", "1", "-timeout", "5m", "--short")
 	if *coverage {
 		gotest.Args = append(gotest.Args, "-covermode=atomic", "-cover")
 	}
@@ -342,7 +341,6 @@ func doLint(cmdline []string) {
 }
 
 // Release Packaging
-
 func doArchive(cmdline []string) {
 	var (
 		arch   = flag.String("arch", runtime.GOARCH, "Architecture cross packaging")
@@ -673,7 +671,6 @@ func stageDebianSource(tmpdir string, meta debMetadata) (pkgdir string) {
 }
 
 // Windows installer
-
 func doWindowsInstaller(cmdline []string) {
 	// Parse the flags and make skip installer generation on PRs
 	var (
@@ -883,7 +880,7 @@ func doXCodeFramework(cmdline []string) {
 	// Build the iOS XCode framework
 	build.MustRun(goTool("get", "golang.org/x/mobile/cmd/gomobile", "golang.org/x/mobile/cmd/gobind"))
 	build.MustRun(gomobileTool("init"))
-	bind := gomobileTool("bind", "-ldflags", "-s -w", "--target", "ios", "--tags", "ios", "-v", "github.com/entropy/go-entropy/mobile")
+	bind := gomobileTool("bind", "-ldflags", "-s -w", "--target", "ios", "-v", "github.com/entropy/go-entropy/mobile")
 
 	if *local {
 		// If we're building locally, use the build folder and stop afterwards

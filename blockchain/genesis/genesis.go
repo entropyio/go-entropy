@@ -138,6 +138,10 @@ func (e *GenesisMismatchError) Error() string {
 //
 // The returned chain configuration is never nil.
 func SetupGenesisBlock(db database.Database, genesis *Genesis) (*config.ChainConfig, common.Hash, error) {
+	return SetupGenesisBlockWithOverride(db, genesis, nil)
+}
+
+func SetupGenesisBlockWithOverride(db database.Database, genesis *Genesis, overrideIstanbul *big.Int) (*config.ChainConfig, common.Hash, error) {
 	if genesis != nil && genesis.Config == nil {
 		return config.DefaultChainConfig, common.Hash{}, errGenesisNoConfig
 	}
@@ -186,6 +190,12 @@ func SetupGenesisBlock(db database.Database, genesis *Genesis) (*config.ChainCon
 
 	// Get the existing chain configuration.
 	newConfig := genesis.configOrDefault(stored)
+	if overrideIstanbul != nil {
+		newConfig.IstanbulBlock = overrideIstanbul
+	}
+	if err := newConfig.CheckConfigForkOrder(); err != nil {
+		return newConfig, common.Hash{}, err
+	}
 	storedConfig := mapper.ReadChainConfig(db, stored)
 	if storedConfig == nil {
 		genesisLog.Warning("Found genesis block without chain config")
@@ -285,6 +295,14 @@ func (g *Genesis) Commit(db database.Database) (*model.Block, error) {
 	if block.Number().Sign() != 0 {
 		return nil, fmt.Errorf("can't commit genesis block with number > 0")
 	}
+
+	configObj := g.Config
+	if configObj == nil {
+		configObj = config.DefaultChainConfig
+	}
+	if err := configObj.CheckConfigForkOrder(); err != nil {
+		return nil, err
+	}
 	mapper.WriteTd(db, block.Hash(), block.NumberU64(), g.Difficulty)
 	mapper.WriteBlock(db, block)
 	mapper.WriteReceipts(db, block.Hash(), block.NumberU64(), nil)
@@ -292,11 +310,6 @@ func (g *Genesis) Commit(db database.Database) (*model.Block, error) {
 	mapper.WriteHeadBlockHash(db, block.Hash())
 	mapper.WriteHeadFastBlockHash(db, block.Hash())
 	mapper.WriteHeadHeaderHash(db, block.Hash())
-
-	configObj := g.Config
-	if configObj == nil {
-		configObj = config.DefaultChainConfig
-	}
 	mapper.WriteChainConfig(db, block.Hash(), configObj)
 
 	genesisLog.Warningf("End Commit genesis block with hash: %X", block.Hash())

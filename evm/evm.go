@@ -32,9 +32,11 @@ func run(evm *EVM, contract *Contract, input []byte, readOnly bool) ([]byte, err
 	vmLog.Debugf("evm run. codeAddr=%x, input=%x", contract.CodeAddr, input)
 	if contract.CodeAddr != nil {
 		precompiles := PrecompiledContractsHomestead
-		if evm.ChainConfig().IsByzantium(evm.BlockNumber) {
+		if evm.chainRules.IsByzantium {
 			precompiles = PrecompiledContractsByzantium
-			vmLog.Warningf("evm run. precompiles change to Byzantium, blockNumber=%d", evm.BlockNumber)
+		}
+		if evm.chainRules.IsIstanbul {
+			precompiles = PrecompiledContractsIstanbul
 		}
 		if p := precompiles[*contract.CodeAddr]; p != nil {
 			vmLog.Warningf("evm run. precompiles p", p)
@@ -197,11 +199,13 @@ func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas 
 
 	if !evm.StateDB.Exist(addr) {
 		precompiles := PrecompiledContractsHomestead
-		if evm.ChainConfig().IsByzantium(evm.BlockNumber) {
+		if evm.chainRules.IsByzantium {
 			precompiles = PrecompiledContractsByzantium
 		}
-		vmLog.Warningf("addr=%x, blockNumber=%d, isHomestead=%t, sign=%d", precompiles[addr], evm.BlockNumber, evm.ChainConfig().IsHomestead(evm.BlockNumber), value.Sign())
-		if precompiles[addr] == nil && evm.ChainConfig().IsEIP158(evm.BlockNumber) && value.Sign() == 0 {
+		if evm.chainRules.IsIstanbul {
+			precompiles = PrecompiledContractsIstanbul
+		}
+		if precompiles[addr] == nil && evm.chainRules.IsEIP158 && value.Sign() == 0 {
 			// Calling a non existing account, don't do anything, but ping the tracer
 			if evm.vmConfig.Debug && evm.depth == 0 {
 				evm.vmConfig.Tracer.CaptureStart(caller.Address(), addr, false, input, gas, value)
@@ -419,7 +423,7 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	ret, err := run(evm, contract, nil, false)
 
 	// check whether the max code size has been exceeded
-	maxCodeSizeExceeded := evm.ChainConfig().IsEIP158(evm.BlockNumber) && len(ret) > config.MaxCodeSize
+	maxCodeSizeExceeded := evm.chainRules.IsEIP158 && len(ret) > config.MaxCodeSize
 	// if the contract creation ran successfully and no errors were returned
 	// calculate the gas required to store the code. If the code could not
 	// be stored due to not enough gas set an error and let it be handled
@@ -436,7 +440,7 @@ func (evm *EVM) create(caller ContractRef, codeAndHash *codeAndHash, gas uint64,
 	// When an error was returned by the EVM or when setting the creation code
 	// above we revert to the snapshot and consume any gas remaining. Additionally
 	// when we're in homestead this also counts for code storage gas errors.
-	if maxCodeSizeExceeded || (err != nil && (evm.ChainConfig().IsHomestead(evm.BlockNumber) || err != ErrCodeStoreOutOfGas)) {
+	if maxCodeSizeExceeded || (err != nil && (evm.chainRules.IsHomestead || err != ErrCodeStoreOutOfGas)) {
 		evm.StateDB.RevertToSnapshot(snapshot)
 		if err != errExecutionReverted {
 			contract.UseGas(contract.Gas)

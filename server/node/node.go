@@ -10,7 +10,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/entropyio/go-entropy/account"
+	"github.com/entropyio/go-entropy/accounts"
 
 	"github.com/entropyio/go-entropy/event"
 	"github.com/entropyio/go-entropy/logger"
@@ -29,7 +29,7 @@ var log = logger.NewLogger("[node]")
 type Node struct {
 	eventmux *event.TypeMux // Event multiplexer used between the services of a stack
 	config   *Config
-	accman   *account.Manager
+	accman   *accounts.Manager
 
 	ephemeralKeystore string            // if non-empty, the key directory that will be removed by Stop
 	instanceDirLock   fileutil.Releaser // prevents concurrent use of instance directory
@@ -555,7 +555,7 @@ func (n *Node) InstanceDir() string {
 }
 
 // AccountManager retrieves the account manager used by the protocol stack.
-func (n *Node) AccountManager() *account.Manager {
+func (n *Node) AccountManager() *accounts.Manager {
 	return n.accman
 }
 

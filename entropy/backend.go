@@ -7,7 +7,7 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/entropyio/go-entropy/account"
+	"github.com/entropyio/go-entropy/accounts"
 	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/blockchain/bloombits"
 	"github.com/entropyio/go-entropy/blockchain/genesis"
@@ -55,8 +55,6 @@ type Entropy struct {
 	// Channel for shutting down the service
 	shutdownChan chan bool
 
-	server *p2p.Server
-
 	// Handlers
 	txPool          *blockchain.TxPool
 	blockchain      *blockchain.BlockChain
@@ -68,7 +66,7 @@ type Entropy struct {
 
 	eventMux       *event.TypeMux
 	engine         consensus.Engine
-	accountManager *account.Manager
+	accountManager *accounts.Manager
 
 	bloomRequests chan chan *bloombits.Retrieval // Channel receiving bloom data retrieval requests
 	bloomIndexer  *blockchain.ChainIndexer       // Bloom indexer operating during block imports
@@ -450,7 +448,7 @@ func (s *Entropy) StartMining(threads int) error {
 			return fmt.Errorf("etherbase missing: %v", err)
 		}
 		if clique, ok := s.engine.(*clique.Clique); ok {
-			wallet, err := s.accountManager.Find(account.Account{Address: eb})
+			wallet, err := s.accountManager.Find(accounts.Account{Address: eb})
 			if wallet == nil || err != nil {
 				log.Error("Etherbase account unavailable locally", "err", err)
 				return fmt.Errorf("signer missing: %v", err)
@@ -483,7 +481,7 @@ func (s *Entropy) StopMining() {
 func (s *Entropy) IsMining() bool      { return s.miner.Mining() }
 func (s *Entropy) Miner() *miner.Miner { return s.miner }
 
-func (s *Entropy) AccountManager() *account.Manager   { return s.accountManager }
+func (s *Entropy) AccountManager() *accounts.Manager  { return s.accountManager }
 func (s *Entropy) BlockChain() *blockchain.BlockChain { return s.blockchain }
 func (s *Entropy) TxPool() *blockchain.TxPool         { return s.txPool }
 func (s *Entropy) EventMux() *event.TypeMux           { return s.eventMux }

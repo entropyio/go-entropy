@@ -23,9 +23,8 @@ var (
 
 const (
 	// Timeouts
-	tcpKeepAliveInterval = 30 * time.Second
-	defaultDialTimeout   = 10 * time.Second // used if context has no deadline
-	subscribeTimeout     = 5 * time.Second  // overall timeout eth_subscribe, rpc_modules calls
+	defaultDialTimeout = 10 * time.Second // used if context has no deadline
+	subscribeTimeout   = 5 * time.Second  // overall timeout eth_subscribe, rpc_modules calls
 )
 
 const (
@@ -119,9 +118,11 @@ func (op *requestOp) wait(ctx context.Context, c *Client) (*jsonrpcMessage, erro
 	select {
 	case <-ctx.Done():
 		// Send the timeout to dispatch so it can remove the request IDs.
-		select {
-		case c.reqTimeout <- op:
-		case <-c.closing:
+		if !c.isHTTP {
+			select {
+			case c.reqTimeout <- op:
+			case <-c.closing:
+			}
 		}
 		return nil, ctx.Err()
 	case resp := <-op.resp:

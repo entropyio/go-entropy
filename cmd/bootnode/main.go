@@ -48,7 +48,9 @@ func main() {
 		if err = crypto.SaveECDSA(*genKey, nodeKey); err != nil {
 			utils.Fatalf("%v", err)
 		}
-		return
+		if !*writeAddr {
+			return
+		}
 	case *nodeKeyFile == "" && *nodeKeyHex == "":
 		utils.Fatalf("Use -nodekey or -nodekeyhex to specify a private key")
 	case *nodeKeyFile != "" && *nodeKeyHex != "":
@@ -97,7 +99,7 @@ func main() {
 
 	printNotice(&nodeKey.PublicKey, *realaddr)
 	//if *runv5 {
-	//	if _, err := discv5.ListenUDP(nodeKey, conn, realaddr, "", restrictList); err != nil {
+	//	if _, err := discv5.ListenUDP(nodeKey, conn, "", restrictList); err != nil {
 	//		utils.Fatalf("%v", err)
 	//	}
 	//} else {
@@ -120,8 +122,7 @@ func printNotice(nodeKey *ecdsa.PublicKey, addr net.UDPAddr) {
 		addr.IP = net.IP{127, 0, 0, 1}
 	}
 	n := enode.NewV4(nodeKey, addr.IP, 0, addr.Port)
-	fmt.Println(n.String())
+	fmt.Println(n.URLv4())
 	fmt.Println("Note: you're using cmd/bootnode, a developer tool.")
 	fmt.Println("We recommend using a regular node as bootstrap node for production deployments.")
-	log.Info("We recommend using a regular node as bootstrap node for production deployments.")
 }

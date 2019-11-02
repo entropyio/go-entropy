@@ -79,18 +79,18 @@ type freezerTable struct {
 	// to count how many historic items have gone missing.
 	itemOffset uint32 // Offset (number of discarded items)
 
-	headBytes   uint32          // Number of bytes written to the head file
-	readMeter   metrics.Meter   // Meter for measuring the effective amount of data read
-	writeMeter  metrics.Meter   // Meter for measuring the effective amount of data written
-	sizeCounter metrics.Counter // Counter for tracking the combined size of all freezer tables
+	headBytes  uint32        // Number of bytes written to the head file
+	readMeter  metrics.Meter // Meter for measuring the effective amount of data read
+	writeMeter metrics.Meter // Meter for measuring the effective amount of data written
+	sizeGauge  metrics.Gauge // Gauge for tracking the combined size of all freezer tables
 
 	logger *logging.Logger // Logger with database path and table name ambedded
 	lock   sync.RWMutex    // Mutex protecting the data file descriptors
 }
 
 // newTable opens a freezer table with default settings - 2G files
-func newTable(path string, name string, readMeter metrics.Meter, writeMeter metrics.Meter, sizeCounter metrics.Counter, disableSnappy bool) (*freezerTable, error) {
-	return newCustomTable(path, name, readMeter, writeMeter, sizeCounter, 2*1000*1000*1000, disableSnappy)
+func newTable(path string, name string, readMeter metrics.Meter, writeMeter metrics.Meter, sizeGauge metrics.Gauge, disableSnappy bool) (*freezerTable, error) {
+	return newCustomTable(path, name, readMeter, writeMeter, sizeGauge, 2*1000*1000*1000, disableSnappy)
 }
 
 // openFreezerFileForAppend opens a freezer table file and seeks to the end
@@ -134,7 +134,7 @@ func truncateFreezerFile(file *os.File, size int64) error {
 // newCustomTable opens a freezer table, creating the data and index files if they are
 // non existent. Both files are truncated to the shortest common length to ensure
 // they don't go out of sync.
-func newCustomTable(path string, name string, readMeter metrics.Meter, writeMeter metrics.Meter, sizeCounter metrics.Counter, maxFilesize uint32, noCompression bool) (*freezerTable, error) {
+func newCustomTable(path string, name string, readMeter metrics.Meter, writeMeter metrics.Meter, sizeGauge metrics.Gauge, maxFilesize uint32, noCompression bool) (*freezerTable, error) {
 	// Ensure the containing directory exists and open the indexEntry file
 	if err := os.MkdirAll(path, 0755); err != nil {
 		return nil, err
@@ -157,7 +157,7 @@ func newCustomTable(path string, name string, readMeter metrics.Meter, writeMete
 		files:         make(map[uint32]*os.File),
 		readMeter:     readMeter,
 		writeMeter:    writeMeter,
-		sizeCounter:   sizeCounter,
+		sizeGauge:     sizeGauge,
 		name:          name,
 		path:          path,
 		logger:        logger.NewLogger("[freezer]"),
@@ -174,7 +174,7 @@ func newCustomTable(path string, name string, readMeter metrics.Meter, writeMete
 		tab.Close()
 		return nil, err
 	}
-	tab.sizeCounter.Inc(int64(size))
+	tab.sizeGauge.Inc(int64(size))
 
 	return tab, nil
 }
@@ -257,7 +257,9 @@ func (t *freezerTable) repair() error {
 			if newLastIndex.filenum != lastIndex.filenum {
 				// Release earlier opened file
 				t.releaseFile(lastIndex.filenum)
-				t.head, err = t.openFile(newLastIndex.filenum, openFreezerFileForAppend)
+				if t.head, err = t.openFile(newLastIndex.filenum, openFreezerFileForAppend); err != nil {
+					return err
+				}
 				if stat, err = t.head.Stat(); err != nil {
 					// TODO, anything more we can do here?
 					// A data file has gone missing...
@@ -361,7 +363,7 @@ func (t *freezerTable) truncate(items uint64) error {
 	if err != nil {
 		return err
 	}
-	t.sizeCounter.Dec(int64(oldSize - newSize))
+	t.sizeGauge.Dec(int64(oldSize - newSize))
 
 	return nil
 }
@@ -493,7 +495,7 @@ func (t *freezerTable) Append(item uint64, blob []byte) error {
 	t.index.Write(idx.marshallBinary())
 
 	t.writeMeter.Mark(int64(bLen + indexEntrySize))
-	t.sizeCounter.Inc(int64(bLen + indexEntrySize))
+	t.sizeGauge.Inc(int64(bLen + indexEntrySize))
 
 	atomic.AddUint64(&t.items, 1)
 	return nil

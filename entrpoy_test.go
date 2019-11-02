@@ -2,7 +2,7 @@ package entropy_test
 
 import (
 	"fmt"
-	"github.com/entropyio/go-entropy/account"
+	"github.com/entropyio/go-entropy/accounts"
 	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/blockchain/genesis"
 	"github.com/entropyio/go-entropy/blockchain/mapper"
@@ -41,7 +41,7 @@ func printBlockChain(bc *blockchain.BlockChain) {
 
 func TestCreateChainInDB(t *testing.T) {
 	var (
-		db, _ = mapper.NewLevelDBDatabase("D:/blockchain/GoEntropy/data/entropy_test/chaindata", 0, 0, "test")
+		db, _ = mapper.NewLevelDBDatabase("/Users/wangzhen/Desktop/blockchain/GoEntropy/data/entropy_test/chaindata", 0, 0, "test")
 	)
 
 	// Ensure that key1 has some funds in the genesis block.
@@ -96,7 +96,7 @@ func TestCreateChainInDB(t *testing.T) {
 
 func TestLoadChainFromDB(t *testing.T) {
 	var (
-		db, _ = mapper.NewLevelDBDatabase("D:/blockchain/GoEntropy/data/entropy_test/chaindata", 0, 0, "test")
+		db, _ = mapper.NewLevelDBDatabase("/Users/wangzhen/Desktop/blockchain/GoEntropy/data/entropy_test/chaindata", 0, 0, "test")
 	)
 
 	blockchainObj, _ := blockchain.NewBlockChain(db, nil, config.TestChainConfig, ethash.NewFaker(), evm.Config{}, nil)
@@ -145,14 +145,14 @@ func TestLoadChainFromDB(t *testing.T) {
 func TestMinerStart(t *testing.T) {
 	nodeConfig := &node.Config{
 		Name:    "entropy_test",
-		DataDir: "D:/blockchain/GoEntropy/data",
+		DataDir: "/Users/wangzhen/Desktop/blockchain/GoEntropy/data",
 	}
 
 	ctx := &node.ServiceContext{
 		Config:         nodeConfig,
 		Services:       make(map[reflect.Type]node.Service),
 		EventMux:       new(event.TypeMux),
-		AccountManager: new(account.Manager),
+		AccountManager: new(accounts.Manager),
 	}
 
 	config := &entropy.Config{}

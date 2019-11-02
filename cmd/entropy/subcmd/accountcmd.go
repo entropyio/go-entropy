@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io/ioutil"
 
-	"github.com/entropyio/go-entropy/account"
-	"github.com/entropyio/go-entropy/account/keystore"
+	"github.com/entropyio/go-entropy/accounts"
+	"github.com/entropyio/go-entropy/accounts/keystore"
 	"github.com/entropyio/go-entropy/cmd/console"
 	"github.com/entropyio/go-entropy/cmd/utils"
 	"github.com/entropyio/go-entropy/common/crypto"
@@ -191,7 +191,7 @@ func accountList(ctx *cli.Context) error {
 }
 
 // tries unlocking the specified account a few times.
-func UnlockAccount(ctx *cli.Context, ks *keystore.KeyStore, address string, i int, passwords []string) (account.Account, string) {
+func UnlockAccount(ctx *cli.Context, ks *keystore.KeyStore, address string, i int, passwords []string) (accounts.Account, string) {
 	accountObj, err := utils.MakeAddress(ks, address)
 	if err != nil {
 		utils.Fatalf("Could not list account: %v", err)
@@ -216,7 +216,7 @@ func UnlockAccount(ctx *cli.Context, ks *keystore.KeyStore, address string, i in
 	// All trials expended to unlock account, bail out
 	utils.Fatalf("Failed to unlock account %s (%v)", address, err)
 
-	return account.Account{}, ""
+	return accounts.Account{}, ""
 }
 
 // getPassPhrase retrieves the password associated with an account, either fetched
@@ -249,13 +249,13 @@ func getPassPhrase(prompt string, confirmation bool, i int, passwords []string) 
 	return password
 }
 
-func ambiguousAddrRecovery(ks *keystore.KeyStore, err *keystore.AmbiguousAddrError, auth string) account.Account {
+func ambiguousAddrRecovery(ks *keystore.KeyStore, err *keystore.AmbiguousAddrError, auth string) accounts.Account {
 	fmt.Printf("Multiple key files exist for address %x:\n", err.Addr)
 	for _, a := range err.Matches {
 		fmt.Println("  ", a.URL)
 	}
 	fmt.Println("Testing your passphrase against all of them...")
-	var match *account.Account
+	var match *accounts.Account
 	for _, a := range err.Matches {
 		if err := ks.Unlock(a, auth); err == nil {
 			match = &a

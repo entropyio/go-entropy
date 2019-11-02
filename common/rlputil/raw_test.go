@@ -14,18 +14,18 @@ func TestCountValues(t *testing.T) {
 		err   error
 	}{
 		// simple cases
-		//{"", 0, nil},
-		//{"00", 1, nil},
-		//{"80", 1, nil},
-		//{"C0", 1, nil},
-		//{"01 02 03", 3, nil},
-		//{"01 C406070809 02", 3, nil},
+		{"", 0, nil},
+		{"00", 1, nil},
+		{"80", 1, nil},
+		{"C0", 1, nil},
+		{"01 02 03", 3, nil},
+		{"01 C406070809 02", 3, nil},
 		{"820101 820202 8403030303 04", 4, nil},
-		//
-		//// size errors
-		//{"8142", 0, ErrCanonSize},
-		//{"01 01 8142", 0, ErrCanonSize},
-		//{"02 84020202", 0, ErrValueTooLarge},
+
+		// size errors
+		{"8142", 0, ErrCanonSize},
+		{"01 01 8142", 0, ErrCanonSize},
+		{"02 84020202", 0, ErrValueTooLarge},
 
 		{
 			input: "A12000BF49F440A1CD0527E4D06E2765654C0F56452257516D793A9B8D604DCFDF2AB853F851808D10000000000000000000000000A056E81F171BCC55A6FF8345E692C0F86E5B48E01B996CADC001622FB5E363B421A0C5D2460186F7233C927E7DB2DCC703C0E500B653CA82273B7BFAD8045D85A470",

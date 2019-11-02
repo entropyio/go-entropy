@@ -102,7 +102,12 @@ func (stateDB *StateDB) dump(c collector, excludeCode, excludeStorage, excludeMi
 			account.Storage = make(map[common.Hash]string)
 			storageIt := trie.NewIterator(obj.getTrie(stateDB.db).NodeIterator(nil))
 			for storageIt.Next() {
-				account.Storage[common.BytesToHash(stateDB.trie.GetKey(storageIt.Key))] = common.Bytes2Hex(storageIt.Value)
+				_, content, _, err := rlputil.Split(storageIt.Value)
+				if err != nil {
+					stateLog.Error("Failed to decode the value returned by iterator", "error", err)
+					continue
+				}
+				account.Storage[common.BytesToHash(stateDB.trie.GetKey(storageIt.Key))] = common.Bytes2Hex(content)
 			}
 		}
 		c.onAccount(addr, account)

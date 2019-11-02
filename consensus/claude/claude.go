@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/entropyio/go-entropy/account"
+	"github.com/entropyio/go-entropy/accounts"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
@@ -91,7 +91,7 @@ type Claude struct {
 	stop chan bool
 }
 
-type SignerFn func(account.Account, []byte) ([]byte, error)
+type SignerFn func(accounts.Account, []byte) ([]byte, error)
 
 // Fixme: dpos共识算法修改了header，会导致区块和pow，pos不一致。需要在不改变区块的情况下支持dpos
 
@@ -463,7 +463,7 @@ func (claude *Claude) Seal(chain consensus.ChainReader, block *model.Block, resu
 	block.Header().Time = (uint64)(time.Now().Unix())
 
 	// time's up, sign the block
-	sighash, err := claude.signFn(account.Account{Address: claude.signer}, sigHash(header).Bytes())
+	sighash, err := claude.signFn(accounts.Account{Address: claude.signer}, sigHash(header).Bytes())
 	if err != nil {
 		return err
 	}

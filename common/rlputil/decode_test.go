@@ -311,6 +311,10 @@ type recstruct struct {
 	Child *recstruct `rlputil:"nil"`
 }
 
+type invalidNilTag struct {
+	X []byte `rlputil:"nil"`
+}
+
 type invalidTail1 struct {
 	A uint `rlputil:"tail"`
 	B string
@@ -333,8 +337,20 @@ type tailUint struct {
 
 type tailPrivateFields struct {
 	A    uint
-	Tail []uint `rlp:"tail"`
+	Tail []uint `rlputil:"tail"`
 	x, y bool
+}
+
+type nilListUint struct {
+	X *uint `rlputil:"nilList"`
+}
+
+type nilStringSlice struct {
+	X *[]uint `rlputil:"nilString"`
+}
+
+type intField struct {
+	X int
 }
 
 var (
@@ -469,19 +485,19 @@ var decodeTests = []decodeTest{
 		error: "rlputil: expected input string or byte for uint, decoding into (rlputil.recstruct).Child.I",
 	},
 	{
-		input: "C0",
-		ptr:   new(invalidTail1),
-		error: "rlputil: invalid struct tag \"tail\" for rlputil.invalidTail1.A (must be on last field)",
-	},
-	{
-		input: "C0",
-		ptr:   new(invalidTail2),
-		error: "rlputil: invalid struct tag \"tail\" for rlputil.invalidTail2.B (field type is not slice)",
+		input: "C103",
+		ptr:   new(intField),
+		error: "rlp: type int is not RLP-serializable (struct field rlp.intField.X)",
 	},
 	{
 		input: "C50102C20102",
 		ptr:   new(tailUint),
-		error: "rlputil: expected input string or byte for uint, decoding into (rlputil.tailUint).Tail[1]",
+		error: "rlp: expected input string or byte for uint, decoding into (rlp.tailUint).Tail[1]",
+	},
+	{
+		input: "C0",
+		ptr:   new(invalidNilTag),
+		error: `rlp: invalid struct tag "nil" for rlp.invalidNilTag.X (field is not a pointer)`,
 	},
 
 	// struct tag "tail"
@@ -505,12 +521,59 @@ var decodeTests = []decodeTest{
 		ptr:   new(tailPrivateFields),
 		value: tailPrivateFields{A: 1, Tail: []uint{2, 3}},
 	},
+	{
+		input: "C0",
+		ptr:   new(invalidTail1),
+		error: `rlp: invalid struct tag "tail" for rlp.invalidTail1.A (must be on last field)`,
+	},
+	{
+		input: "C0",
+		ptr:   new(invalidTail2),
+		error: `rlp: invalid struct tag "tail" for rlp.invalidTail2.B (field type is not slice)`,
+	},
 
 	// struct tag "-"
 	{
 		input: "C20102",
 		ptr:   new(hasIgnoredField),
 		value: hasIgnoredField{A: 1, C: 2},
+	},
+
+	// struct tag "nilList"
+	{
+		input: "C180",
+		ptr:   new(nilListUint),
+		error: "rlp: wrong kind of empty value (got String, want List) for *uint, decoding into (rlp.nilListUint).X",
+	},
+	{
+		input: "C1C0",
+		ptr:   new(nilListUint),
+		value: nilListUint{},
+	},
+	{
+		input: "C103",
+		ptr:   new(nilListUint),
+		value: func() interface{} {
+			v := uint(3)
+			return nilListUint{X: &v}
+		}(),
+	},
+
+	// struct tag "nilString"
+	{
+		input: "C1C0",
+		ptr:   new(nilStringSlice),
+		error: "rlp: wrong kind of empty value (got List, want String) for *[]uint, decoding into (rlp.nilStringSlice).X",
+	},
+	{
+		input: "C180",
+		ptr:   new(nilStringSlice),
+		value: nilStringSlice{},
+	},
+	{
+		input: "C2C103",
+		ptr:   new(nilStringSlice),
+		value: nilStringSlice{X: &[]uint{3}},
 	},
 
 	// RawValue
@@ -653,6 +716,22 @@ func TestDecodeDecoder(t *testing.T) {
 		t.Errorf("**testDecoder has not been allocated")
 	} else if !(*s.T3).called {
 		t.Errorf("DecodeRLP was not called for **testDecoder")
+	}
+}
+
+func TestDecodeDecoderNilPointer(t *testing.T) {
+	var s struct {
+		T1 *testDecoder `rlp:"nil"`
+		T2 *testDecoder
+	}
+	if err := Decode(bytes.NewReader(unhex("C2C002")), &s); err != nil {
+		t.Fatalf("Decode error: %v", err)
+	}
+	if s.T1 != nil {
+		t.Errorf("decoder T1 allocated for empty input (called: %v)", s.T1.called)
+	}
+	if s.T2 == nil || !s.T2.called {
+		t.Errorf("decoder T2 not allocated/called")
 	}
 }
 

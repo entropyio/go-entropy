@@ -9,8 +9,8 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/entropyio/go-entropy/account"
-	"github.com/entropyio/go-entropy/account/keystore"
+	"github.com/entropyio/go-entropy/accounts"
+	"github.com/entropyio/go-entropy/accounts/keystore"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/rpc"
@@ -443,7 +443,7 @@ func (c *Config) AccountConfig() (int, int, string, error) {
 	return scryptN, scryptP, keydir, err
 }
 
-func makeAccountManager(conf *Config) (*account.Manager, string, error) {
+func makeAccountManager(conf *Config) (*accounts.Manager, string, error) {
 	scryptN, scryptP, keydir, err := conf.AccountConfig()
 	var ephemeral string
 	if keydir == "" {
@@ -459,7 +459,7 @@ func makeAccountManager(conf *Config) (*account.Manager, string, error) {
 		return nil, "", err
 	}
 	// Assemble the account manager and supported backends
-	var backends []account.Backend
+	var backends []accounts.Backend
 
 	// TODO: enable external signer
 	//if len(conf.ExternalSigner) > 0 {
@@ -498,7 +498,7 @@ func makeAccountManager(conf *Config) (*account.Manager, string, error) {
 		//}
 	}
 
-	return account.NewManager(&account.Config{InsecureUnlockAllowed: conf.InsecureUnlockAllowed}, backends...), ephemeral, nil
+	return accounts.NewManager(&accounts.Config{InsecureUnlockAllowed: conf.InsecureUnlockAllowed}, backends...), ephemeral, nil
 }
 
 var warnLock sync.Mutex

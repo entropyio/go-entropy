@@ -1,4 +1,4 @@
-// evmdisTracer returns sufficent information from a trace to perform evmdis-style
+// evmdisTracer returns sufficient information from a trace to perform evmdis-style
 // disassembly.
 {
 	stack: [{ops: []}],

@@ -12,6 +12,7 @@ import (
 	"github.com/entropyio/go-entropy/common/rlputil"
 	"github.com/entropyio/go-entropy/common/timeutil"
 	"github.com/entropyio/go-entropy/event"
+	"github.com/entropyio/go-entropy/metrics"
 	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"github.com/entropyio/go-entropy/server/p2p/enr"
 )
@@ -283,6 +284,9 @@ func (p *Peer) handle(msg Msg) error {
 		if err != nil {
 			return fmt.Errorf("msg code out of range: %v", msg.Code)
 		}
+		if metrics.Enabled {
+			metrics.GetOrRegisterMeter(fmt.Sprintf("%s/%s/%d/%#02x", MetricsInboundTraffic, proto.Name, proto.Version, msg.Code-proto.offset), nil).Mark(int64(msg.meterSize))
+		}
 		select {
 		case proto.in <- msg:
 			return nil
@@ -381,6 +385,9 @@ func (rw *protoRW) WriteMsg(msg Msg) (err error) {
 	if msg.Code >= rw.Length {
 		return newPeerError(errInvalidMsgCode, "not handled")
 	}
+	msg.meterCap = rw.cap()
+	msg.meterCode = msg.Code
+
 	msg.Code += rw.offset
 	select {
 	case <-rw.wstart:

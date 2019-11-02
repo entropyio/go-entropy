@@ -139,4 +139,7 @@ type Config struct {
 
 	// CheckpointOracle is the configuration for checkpoint oracle.
 	CheckpointOracle *config.CheckpointOracleConfig `toml:",omitempty"`
+
+	// Istanbul block override (TODO: remove after the fork)
+	OverrideIstanbul *big.Int
 }

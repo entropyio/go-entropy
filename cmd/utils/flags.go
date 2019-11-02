@@ -2,9 +2,10 @@ package utils
 
 import (
 	"crypto/ecdsa"
+	"errors"
 	"fmt"
-	"github.com/entropyio/go-entropy/account"
-	"github.com/entropyio/go-entropy/account/keystore"
+	"github.com/entropyio/go-entropy/accounts"
+	"github.com/entropyio/go-entropy/accounts/keystore"
 	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/blockchain/genesis"
 	"github.com/entropyio/go-entropy/common"
@@ -26,17 +27,21 @@ import (
 	"github.com/entropyio/go-entropy/metrics"
 	"github.com/entropyio/go-entropy/metrics/influxdb"
 	"github.com/entropyio/go-entropy/miner"
+	"github.com/entropyio/go-entropy/rpc"
 	"github.com/entropyio/go-entropy/server/node"
 	"github.com/entropyio/go-entropy/server/p2p"
 	"github.com/entropyio/go-entropy/server/p2p/discv5"
 	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"github.com/entropyio/go-entropy/server/p2p/nat"
 	"gopkg.in/urfave/cli.v1"
+	"io"
 	"io/ioutil"
 	"math/big"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"text/tabwriter"
+	"text/template"
 	"time"
 )
 
@@ -70,6 +75,7 @@ GLOBAL OPTIONS:
 `
 
 	cli.CommandHelpTemplate = CommandHelpTemplate
+	cli.HelpPrinter = printHelp
 }
 
 func NewApp(gitCommit, gitDate, usage string) *cli.App {
@@ -84,6 +90,17 @@ func NewApp(gitCommit, gitDate, usage string) *cli.App {
 	return app
 }
 
+func printHelp(out io.Writer, templ string, data interface{}) {
+	funcMap := template.FuncMap{"join": strings.Join}
+	t := template.Must(template.New("help").Funcs(funcMap).Parse(templ))
+	w := tabwriter.NewWriter(out, 38, 8, 2, ' ', 0)
+	err := t.Execute(w, data)
+	if err != nil {
+		panic(err)
+	}
+	w.Flush()
+}
+
 // These are all the command line flags we support.
 // If you add to this list, please remember to include the
 // flag in the appropriate command definition.
@@ -96,7 +113,7 @@ var (
 	DataDirFlag = DirectoryFlag{
 		Name:  "datadir",
 		Usage: "Data directory for the databases and keystore",
-		Value: DirectoryString{node.DefaultDataDir()},
+		Value: DirectoryString(node.DefaultDataDir()),
 	}
 	AncientFlag = DirectoryFlag{
 		Name:  "datadir.ancient",
@@ -127,10 +144,6 @@ var (
 		Name:  "goerli",
 		Usage: "Görli network: pre-configured proof-of-authority test network",
 	}
-	ConstantinopleOverrideFlag = cli.Uint64Flag{
-		Name:  "override.constantinople",
-		Usage: "Manually specify constantinople fork-block, overriding the bundled setting",
-	}
 	DeveloperFlag = cli.BoolFlag{
 		Name:  "dev",
 		Usage: "Ephemeral proof-of-authority network with a pre-funded developer account, mining enabled",
@@ -146,27 +159,27 @@ var (
 	DocRootFlag = DirectoryFlag{
 		Name:  "docroot",
 		Usage: "Document Root for HTTPClient file scheme",
-		Value: DirectoryString{homeDir()},
+		Value: DirectoryString(homeDir()),
 	}
 	ExitWhenSyncedFlag = cli.BoolFlag{
 		Name:  "exitwhensynced",
 		Usage: "Exits after block synchronisation completes",
 	}
-	ULCModeConfigFlag = cli.StringFlag{
-		Name:  "ulc.config",
-		Usage: "Config file to use for ultra light client mode",
+	IterativeOutputFlag = cli.BoolFlag{
+		Name:  "iterative",
+		Usage: "Print streaming JSON iteratively, delimited by newlines",
 	}
-	OnlyAnnounceModeFlag = cli.BoolFlag{
-		Name:  "ulc.onlyannounce",
-		Usage: "ULC server sends announcements only",
+	ExcludeStorageFlag = cli.BoolFlag{
+		Name:  "nostorage",
+		Usage: "Exclude storage entries (save db lookups)",
 	}
-	ULCMinTrustedFractionFlag = cli.IntFlag{
-		Name:  "ulc.fraction",
-		Usage: "Minimum % of trusted ULC servers required to announce a new head",
+	IncludeIncompletesFlag = cli.BoolFlag{
+		Name:  "incompletes",
+		Usage: "Include accounts for which we don't have the address (missing preimage)",
 	}
-	ULCTrustedNodesFlag = cli.StringFlag{
-		Name:  "ulc.trusted",
-		Usage: "List of trusted ULC servers",
+	ExcludeCodeFlag = cli.BoolFlag{
+		Name:  "nocode",
+		Usage: "Exclude contract code (save db lookups)",
 	}
 	defaultSyncMode = entropy.DefaultConfig.SyncMode
 	SyncModeFlag    = TextMarshalerFlag{
@@ -187,7 +200,10 @@ var (
 		Name:  "whitelist",
 		Usage: "Comma separated block number-to-hash mappings to enforce (<number>=<hash>)",
 	}
-
+	OverrideIstanbulFlag = cli.Uint64Flag{
+		Name:  "override.istanbul",
+		Usage: "Manually specify Istanbul fork-block, overriding the bundled setting",
+	}
 	// Light server and client settings
 	LightLegacyServFlag = cli.IntFlag{ // Deprecated in favor of light.serve, remove in 2021
 		Name:  "lightserv",
@@ -272,7 +288,7 @@ var (
 	EthashDatasetDirFlag = DirectoryFlag{
 		Name:  "ethash.dagdir",
 		Usage: "Directory to store the ethash mining DAGs (default = inside home folder)",
-		Value: DirectoryString{entropy.DefaultConfig.Ethash.DatasetDir},
+		Value: DirectoryString(entropy.DefaultConfig.Ethash.DatasetDir),
 	}
 	EthashDatasetsInMemoryFlag = cli.IntFlag{
 		Name:  "ethash.dagsinmem",
@@ -478,6 +494,14 @@ var (
 		Usage: "Disables db compaction after import",
 	}
 	// RPC settings
+	IPCDisabledFlag = cli.BoolFlag{
+		Name:  "ipcdisable",
+		Usage: "Disable the IPC-RPC server",
+	}
+	IPCPathFlag = DirectoryFlag{
+		Name:  "ipcpath",
+		Usage: "Filename for IPC socket/pipe within the datadir (explicit paths escape it)",
+	}
 	RPCEnabledFlag = cli.BoolFlag{
 		Name:  "rpc",
 		Usage: "Enable the HTTP-RPC server",
@@ -491,30 +515,6 @@ var (
 		Name:  "rpcport",
 		Usage: "HTTP-RPC server listening port",
 		Value: node.DefaultHTTPPort,
-	}
-	GraphQLEnabledFlag = cli.BoolFlag{
-		Name:  "graphql",
-		Usage: "Enable the GraphQL server",
-	}
-	GraphQLListenAddrFlag = cli.StringFlag{
-		Name:  "graphql.addr",
-		Usage: "GraphQL server listening interface",
-		Value: node.DefaultGraphQLHost,
-	}
-	GraphQLPortFlag = cli.IntFlag{
-		Name:  "graphql.port",
-		Usage: "GraphQL server listening port",
-		Value: node.DefaultGraphQLPort,
-	}
-	GraphQLCORSDomainFlag = cli.StringFlag{
-		Name:  "graphql.rpccorsdomain",
-		Usage: "Comma separated list of domains from which to accept cross origin requests (browser enforced)",
-		Value: "",
-	}
-	GraphQLVirtualHostsFlag = cli.StringFlag{
-		Name:  "graphql.rpcvhosts",
-		Usage: "Comma separated list of virtual hostnames from which to accept requests (server enforced). Accepts '*' wildcard.",
-		Value: strings.Join(node.DefaultConfig.HTTPVirtualHosts, ","),
 	}
 	RPCCORSDomainFlag = cli.StringFlag{
 		Name:  "rpccorsdomain",
@@ -530,14 +530,6 @@ var (
 		Name:  "rpcapi",
 		Usage: "API's offered over the HTTP-RPC interface",
 		Value: "",
-	}
-	IPCDisabledFlag = cli.BoolFlag{
-		Name:  "ipcdisable",
-		Usage: "Disable the IPC-RPC server",
-	}
-	IPCPathFlag = DirectoryFlag{
-		Name:  "ipcpath",
-		Usage: "Filename for IPC socket/pipe within the datadir (explicit paths escape it)",
 	}
 	WSEnabledFlag = cli.BoolFlag{
 		Name:  "ws",
@@ -562,6 +554,30 @@ var (
 		Name:  "wsorigins",
 		Usage: "Origins from which to accept websockets requests",
 		Value: "",
+	}
+	GraphQLEnabledFlag = cli.BoolFlag{
+		Name:  "graphql",
+		Usage: "Enable the GraphQL server",
+	}
+	GraphQLListenAddrFlag = cli.StringFlag{
+		Name:  "graphql.addr",
+		Usage: "GraphQL server listening interface",
+		Value: node.DefaultGraphQLHost,
+	}
+	GraphQLPortFlag = cli.IntFlag{
+		Name:  "graphql.port",
+		Usage: "GraphQL server listening port",
+		Value: node.DefaultGraphQLPort,
+	}
+	GraphQLCORSDomainFlag = cli.StringFlag{
+		Name:  "graphql.corsdomain",
+		Usage: "Comma separated list of domains from which to accept cross origin requests (browser enforced)",
+		Value: "",
+	}
+	GraphQLVirtualHostsFlag = cli.StringFlag{
+		Name:  "graphql.vhosts",
+		Usage: "Comma separated list of virtual hostnames from which to accept requests (server enforced). Accepts '*' wildcard.",
+		Value: strings.Join(node.DefaultConfig.GraphQLVirtualHosts, ","),
 	}
 	ExecFlag = cli.StringFlag{
 		Name:  "exec",
@@ -797,7 +813,7 @@ func setBootstrapNodes(ctx *cli.Context, cfg *p2p.Config) {
 	cfg.BootstrapNodes = make([]*enode.Node, 0, len(urls))
 	for _, url := range urls {
 		if url != "" {
-			node, err := enode.ParseV4(url)
+			node, err := enode.Parse(enode.ValidSchemes, url)
 			if err != nil {
 				log.Critical("Bootstrap URL invalid", "enode", url, "err", err)
 				continue
@@ -959,15 +975,15 @@ func makeDatabaseHandles() int {
 
 // MakeAddress converts an account specified directly as a hex encoded string or
 // a key index in the key store to an internal account representation.
-func MakeAddress(ks *keystore.KeyStore, accountObj string) (account.Account, error) {
+func MakeAddress(ks *keystore.KeyStore, accountObj string) (accounts.Account, error) {
 	// If the specified account is a valid address, return it
 	if common.IsHexAddress(accountObj) {
-		return account.Account{Address: common.HexToAddress(accountObj)}, nil
+		return accounts.Account{Address: common.HexToAddress(accountObj)}, nil
 	}
 	// Otherwise try to interpret the account as a keystore index
 	index, err := strconv.Atoi(accountObj)
 	if err != nil || index < 0 {
-		return account.Account{}, fmt.Errorf("invalid account address or index %q", accountObj)
+		return accounts.Account{}, fmt.Errorf("invalid account address or index %q", accountObj)
 	}
 	log.Warning("-------------------------------------------------------------------")
 	log.Warning("Referring to accounts by order in the keystore folder is dangerous!")
@@ -977,7 +993,7 @@ func MakeAddress(ks *keystore.KeyStore, accountObj string) (account.Account, err
 
 	accs := ks.Accounts()
 	if len(accs) <= index {
-		return account.Account{}, fmt.Errorf("index %d higher than number of accounts %d", index, len(accs))
+		return accounts.Account{}, fmt.Errorf("index %d higher than number of accounts %d", index, len(accs))
 	}
 	return accs[index], nil
 }
@@ -1033,7 +1049,7 @@ func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config) {
 	//setBootstrapNodesV5(ctx, cfg)
 
 	lightClient := ctx.GlobalString(SyncModeFlag.Name) == "light"
-	lightServer := ctx.GlobalInt(LightLegacyServFlag.Name) != 0 || ctx.GlobalInt(LightServeFlag.Name) != 0
+	lightServer := (ctx.GlobalInt(LightLegacyServFlag.Name) != 0 || ctx.GlobalInt(LightServeFlag.Name) != 0)
 
 	lightPeers := ctx.GlobalInt(LightLegacyPeersFlag.Name)
 	if ctx.GlobalIsSet(LightMaxPeersFlag.Name) {
@@ -1130,11 +1146,11 @@ func setDataDir(ctx *cli.Context, cfg *node.Config) {
 		cfg.DataDir = ctx.GlobalString(DataDirFlag.Name)
 	case ctx.GlobalBool(DeveloperFlag.Name):
 		cfg.DataDir = "" // unless explicitly requested, use memory databases
-	case ctx.GlobalBool(TestnetFlag.Name):
+	case ctx.GlobalBool(TestnetFlag.Name) && cfg.DataDir == node.DefaultDataDir():
 		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "testnet")
-	case ctx.GlobalBool(RinkebyFlag.Name):
+	case ctx.GlobalBool(RinkebyFlag.Name) && cfg.DataDir == node.DefaultDataDir():
 		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "rinkeby")
-	case ctx.GlobalBool(GoerliFlag.Name):
+	case ctx.GlobalBool(GoerliFlag.Name) && cfg.DataDir == node.DefaultDataDir():
 		cfg.DataDir = filepath.Join(node.DefaultDataDir(), "goerli")
 	}
 }
@@ -1358,9 +1374,12 @@ func SetEntropyConfig(ctx *cli.Context, stack *node.Node, cfg *entropy.Config) {
 	if gcmode := ctx.GlobalString(GCModeFlag.Name); gcmode != "full" && gcmode != "archive" {
 		Fatalf("--%s must be either 'full' or 'archive'", GCModeFlag.Name)
 	}
-	cfg.NoPruning = ctx.GlobalString(GCModeFlag.Name) == "archive"
-	cfg.NoPrefetch = ctx.GlobalBool(CacheNoPrefetchFlag.Name)
-
+	if ctx.GlobalIsSet(GCModeFlag.Name) {
+		cfg.NoPruning = ctx.GlobalString(GCModeFlag.Name) == "archive"
+	}
+	if ctx.GlobalIsSet(CacheNoPrefetchFlag.Name) {
+		cfg.NoPrefetch = ctx.GlobalBool(CacheNoPrefetchFlag.Name)
+	}
 	if ctx.GlobalIsSet(CacheFlag.Name) || ctx.GlobalIsSet(CacheTrieFlag.Name) {
 		cfg.TrieCleanCache = ctx.GlobalInt(CacheFlag.Name) * ctx.GlobalInt(CacheTrieFlag.Name) / 100
 	}
@@ -1399,7 +1418,7 @@ func SetEntropyConfig(ctx *cli.Context, stack *node.Node, cfg *entropy.Config) {
 		}
 		// Create new developer account or reuse existing one
 		var (
-			developer account.Account
+			developer accounts.Account
 			err       error
 		)
 		if accs := ks.Accounts(); len(accs) > 0 {
@@ -1481,6 +1500,26 @@ func RegisterEntropyStatsService(stack *node.Node, url string) {
 		return entropystats.New(url, ethServ /*, lesServ*/)
 	}); err != nil {
 		Fatalf("Failed to register the Ethereum Stats service: %v", err)
+	}
+}
+
+// RegisterGraphQLService is a utility function to construct a new service and register it against a node.
+func RegisterGraphQLService(stack *node.Node, endpoint string, cors, vhosts []string, timeouts rpc.HTTPTimeouts) {
+	if err := stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
+		// Try to construct the GraphQL service backed by a full node
+		//var ethServ *entropy.Entropy
+		//if err := ctx.Service(&ethServ); err == nil {
+		//	return graphql.New(ethServ.APIBackend, endpoint, cors, vhosts, timeouts)
+		//}
+		// Try to construct the GraphQL service backed by a light node
+		//var lesServ *les.LightEthereum
+		//if err := ctx.Service(&lesServ); err == nil {
+		//	return graphql.New(lesServ.ApiBackend, endpoint, cors, vhosts, timeouts)
+		//}
+		// Well, this should not have happened, bail out
+		return nil, errors.New("no Entropy service")
+	}); err != nil {
+		Fatalf("Failed to register the GraphQL service: %v", err)
 	}
 }
 

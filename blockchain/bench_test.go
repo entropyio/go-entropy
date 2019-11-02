@@ -70,7 +70,7 @@ func genValueTx(nbytes int) func(int, *BlockGen) {
 	return func(i int, gen *BlockGen) {
 		toaddr := common.Address{}
 		data := make([]byte, nbytes)
-		gas, _ := IntrinsicGas(data, false, false)
+		gas, _ := IntrinsicGas(data, false, false, false)
 		tx, _ := model.SignTx(model.NewTransaction(gen.TxNonce(benchRootAddr), toaddr, big.NewInt(1), gas, nil, data), model.HomesteadSigner{}, benchRootKey)
 		gen.AddTx(tx)
 	}

@@ -2,7 +2,7 @@
 
 git filter-branch --env-filter '
 
-OLD_EMAIL="wangzhen@sh-wangzhen.local"
+OLD_EMAIL="noreply@github.com"
 CORRECT_NAME="eric"
 CORRECT_EMAIL="starwz@gmail.com"
 

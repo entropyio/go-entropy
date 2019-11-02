@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math/big"
-	"net"
 	"regexp"
 	"runtime"
 	"strconv"
@@ -23,7 +22,8 @@ import (
 	"github.com/entropyio/go-entropy/logger"
 	"github.com/entropyio/go-entropy/rpc"
 	"github.com/entropyio/go-entropy/server/p2p"
-	"golang.org/x/net/websocket"
+	"github.com/gorilla/websocket"
+	"net/http"
 )
 
 var log = logger.NewLogger("[stats]")
@@ -184,21 +184,21 @@ func (s *Service) loop() {
 		path := fmt.Sprintf("%s/api", s.host)
 		urls := []string{path}
 
-		if !strings.Contains(path, "://") { // url.Parse and url.IsAbs is unsuitable (https://github.com/golang/go/issues/19779)
+		// url.Parse and url.IsAbs is unsuitable (https://github.com/golang/go/issues/19779)
+		if !strings.Contains(path, "://") {
 			urls = []string{"wss://" + path, "ws://" + path}
 		}
 		// Establish a websocket connection to the server on any supported URL
 		var (
-			conf *websocket.Config
 			conn *websocket.Conn
 			err  error
 		)
+		dialer := websocket.Dialer{HandshakeTimeout: 5 * time.Second}
+		header := make(http.Header)
+		header.Set("origin", "http://localhost")
 		for _, url := range urls {
-			if conf, err = websocket.NewConfig(url, "http://localhost/"); err != nil {
-				continue
-			}
-			conf.Dialer = &net.Dialer{Timeout: 5 * time.Second}
-			if conn, err = websocket.DialConfig(conf); err == nil {
+			conn, _, err = dialer.Dial(url, header)
+			if err == nil {
 				break
 			}
 		}
@@ -268,7 +268,7 @@ func (s *Service) readLoop(conn *websocket.Conn) {
 	for {
 		// Retrieve the next generic network packet and bail out on error
 		var msg map[string][]interface{}
-		if err := websocket.JSON.Receive(conn, &msg); err != nil {
+		if err := conn.ReadJSON(&msg); err != nil {
 			log.Warning("Failed to decode stats server message", "err", err)
 			return
 		}
@@ -383,12 +383,12 @@ func (s *Service) login(conn *websocket.Conn) error {
 	login := map[string][]interface{}{
 		"emit": {"hello", auth},
 	}
-	if err := websocket.JSON.Send(conn, login); err != nil {
+	if err := conn.WriteJSON(login); err != nil {
 		return err
 	}
 	// Retrieve the remote ack or connection termination
 	var ack map[string][]string
-	if err := websocket.JSON.Receive(conn, &ack); err != nil || len(ack["emit"]) != 1 || ack["emit"][0] != "ready" {
+	if err := conn.ReadJSON(&ack); err != nil || len(ack["emit"]) != 1 || ack["emit"][0] != "ready" {
 		return errors.New("unauthorized")
 	}
 	return nil
@@ -425,7 +425,7 @@ func (s *Service) reportLatency(conn *websocket.Conn) error {
 			"clientTime": start.String(),
 		}},
 	}
-	if err := websocket.JSON.Send(conn, ping); err != nil {
+	if err := conn.WriteJSON(ping); err != nil {
 		return err
 	}
 	// Wait for the pong request to arrive back
@@ -447,7 +447,7 @@ func (s *Service) reportLatency(conn *websocket.Conn) error {
 			"latency": latency,
 		}},
 	}
-	return websocket.JSON.Send(conn, stats)
+	return conn.WriteJSON(stats)
 }
 
 // blockStats is the information to report about individual blocks.
@@ -498,7 +498,7 @@ func (s *Service) reportBlock(conn *websocket.Conn, block *model.Block) error {
 	report := map[string][]interface{}{
 		"emit": {"block", stats},
 	}
-	return websocket.JSON.Send(conn, report)
+	return conn.WriteJSON(report)
 }
 
 // assembleBlockStats retrieves any required metadata to report a single block
@@ -612,7 +612,7 @@ func (s *Service) reportHistory(conn *websocket.Conn, list []uint64) error {
 	report := map[string][]interface{}{
 		"emit": {"history", stats},
 	}
-	return websocket.JSON.Send(conn, report)
+	return conn.WriteJSON(report)
 }
 
 // pendStats is the information to report about pending transactions.
@@ -642,7 +642,7 @@ func (s *Service) reportPending(conn *websocket.Conn) error {
 	report := map[string][]interface{}{
 		"emit": {"pending", stats},
 	}
-	return websocket.JSON.Send(conn, report)
+	return conn.WriteJSON(report)
 }
 
 // nodeStats is the information to report about the local node.
@@ -697,5 +697,5 @@ func (s *Service) reportStats(conn *websocket.Conn) error {
 	report := map[string][]interface{}{
 		"emit": {"stats", stats},
 	}
-	return websocket.JSON.Send(conn, report)
+	return conn.WriteJSON(report)
 }

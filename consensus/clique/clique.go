@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/entropyio/go-entropy/account"
+	"github.com/entropyio/go-entropy/accounts"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
@@ -39,8 +39,8 @@ var log = logger.NewLogger("[clique]")
 var (
 	epochLength = uint64(30000) // Default number of blocks after which to checkpoint and reset the pending votes
 
-	extraVanity = 32 // Fixed number of extra-data prefix bytes reserved for signer vanity
-	extraSeal   = 65 // Fixed number of extra-data suffix bytes reserved for signer seal
+	extraVanity = 32                     // Fixed number of extra-data prefix bytes reserved for signer vanity
+	extraSeal   = crypto.SignatureLength // Fixed number of extra-data suffix bytes reserved for signer seal
 
 	nonceAuthVote = hexutil.MustDecode("0xffffffffffffffff") // Magic nonce number to vote on adding a new signer
 	nonceDropVote = hexutil.MustDecode("0x0000000000000000") // Magic nonce number to vote on removing a signer.
@@ -123,7 +123,7 @@ var (
 
 // SignerFn is a signer callback function to request a header to be signed by a
 // backing account.
-type SignerFn func(account.Account, string, []byte) ([]byte, error)
+type SignerFn func(accounts.Account, string, []byte) ([]byte, error)
 
 // ecrecover extracts the Entropy account address from a signed header.
 func ecrecover(header *model.Header, sigcache *lru.ARCCache) (common.Address, error) {
@@ -608,7 +608,7 @@ func (clique *Clique) Seal(chain consensus.ChainReader, block *model.Block, resu
 		log.Debug("Out-of-turn signing requested", "wiggle", common.PrettyDuration(wiggle))
 	}
 	// Sign all the things!
-	sighash, err := signFn(account.Account{Address: signer}, account.MimetypeClique, CliqueRLP(header))
+	sighash, err := signFn(accounts.Account{Address: signer}, accounts.MimetypeClique, CliqueRLP(header))
 	if err != nil {
 		return err
 	}
@@ -709,7 +709,7 @@ func encodeSigHeader(w io.Writer, header *model.Header) {
 		header.GasLimit,
 		header.GasUsed,
 		header.Time,
-		header.Extra[:len(header.Extra)-65], // Yes, this will panic if extra is too short
+		header.Extra[:len(header.Extra)-crypto.SignatureLength], // Yes, this will panic if extra is too short
 		header.MixDigest,
 		header.Nonce,
 	})

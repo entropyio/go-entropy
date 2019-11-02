@@ -37,7 +37,7 @@ func TestEmptyTrie(t *testing.T) {
 	var trie Trie
 	res := trie.Hash()
 	exp := emptyRoot
-	if res != common.Hash(exp) {
+	if res != exp {
 		t.Errorf("expected %x got %x", exp, res)
 	}
 }
@@ -77,27 +77,16 @@ func testMissingNode(t *testing.T, memonly bool) {
 		triedb.Commit(root, true)
 	}
 
-	// test get
 	trie, _ = New(root, triedb)
-	val, err := trie.TryGet([]byte("120000"))
+	_, err := trie.TryGet([]byte("120000"))
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
-	t.Logf("get 120000: %v", string(val))
-
-	val, err = trie.TryGet([]byte("123456"))
+	trie, _ = New(root, triedb)
+	_, err = trie.TryGet([]byte("120099"))
 	if err != nil {
 		t.Errorf("Unexpected error: %v", err)
 	}
-	t.Logf("get 123456: %v", string(val))
-
-	val, err = trie.TryGet([]byte("120099"))
-	if err != nil {
-		t.Errorf("Unexpected error: %v", err)
-	}
-	t.Logf("get 120099: %v", string(val))
-
-	// test again
 	trie, _ = New(root, triedb)
 	_, err = trie.TryGet([]byte("123456"))
 	if err != nil {

@@ -1,8 +1,8 @@
 package subcmd
 
 import (
-	"github.com/entropyio/go-entropy/account"
-	"github.com/entropyio/go-entropy/account/keystore"
+	"github.com/entropyio/go-entropy/accounts"
+	"github.com/entropyio/go-entropy/accounts/keystore"
 	"github.com/entropyio/go-entropy/client"
 	"github.com/entropyio/go-entropy/cmd/utils"
 	"github.com/entropyio/go-entropy/entropy"
@@ -34,7 +34,7 @@ func StartEntropyNode(ctx *cli.Context, stack *node.Node) {
 		}
 	}
 	// Register wallet event handlers to open and auto-derive wallets
-	events := make(chan account.WalletEvent, 16)
+	events := make(chan accounts.WalletEvent, 16)
 	stack.AccountManager().Subscribe(events)
 
 	go func() {
@@ -54,23 +54,23 @@ func StartEntropyNode(ctx *cli.Context, stack *node.Node) {
 		// Listen for wallet event till termination
 		for event := range events {
 			switch event.Kind {
-			case account.WalletArrived:
+			case accounts.WalletArrived:
 				if err := event.Wallet.Open(""); err != nil {
 					log.Warning("New wallet appeared, failed to open", "url", event.Wallet.URL(), "err", err)
 				}
-			case account.WalletOpened:
+			case accounts.WalletOpened:
 				status, _ := event.Wallet.Status()
 				log.Info("New wallet appeared", "url", event.Wallet.URL(), "status", status)
 
-				var derivationPaths []account.DerivationPath
+				var derivationPaths []accounts.DerivationPath
 				if event.Wallet.URL().Scheme == "ledger" {
-					derivationPaths = append(derivationPaths, account.LegacyLedgerBaseDerivationPath)
+					derivationPaths = append(derivationPaths, accounts.LegacyLedgerBaseDerivationPath)
 				}
-				derivationPaths = append(derivationPaths, account.DefaultBaseDerivationPath)
+				derivationPaths = append(derivationPaths, accounts.DefaultBaseDerivationPath)
 
 				event.Wallet.SelfDerive(derivationPaths, stateReader)
 
-			case account.WalletDropped:
+			case accounts.WalletDropped:
 				log.Info("Old wallet dropped", "url", event.Wallet.URL())
 				event.Wallet.Close()
 			}

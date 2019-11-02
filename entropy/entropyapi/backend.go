@@ -5,7 +5,7 @@ import (
 	"context"
 	"math/big"
 
-	"github.com/entropyio/go-entropy/account"
+	"github.com/entropyio/go-entropy/accounts"
 	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/blockchain/bloombits"
 	"github.com/entropyio/go-entropy/blockchain/model"
@@ -28,19 +28,22 @@ type Backend interface {
 	SuggestPrice(ctx context.Context) (*big.Int, error)
 	ChainDb() database.Database
 	EventMux() *event.TypeMux
-	AccountManager() *account.Manager
+	AccountManager() *accounts.Manager
 	ExtRPCEnabled() bool
 	RPCGasCap() *big.Int // global gas cap for eth_call over rpc: DoS protection
 
 	// BlockChain API
 	SetHead(number uint64)
-	HeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*model.Header, error)
-	HeaderByHash(ctx context.Context, blockHash common.Hash) (*model.Header, error)
-	BlockByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*model.Block, error)
-	StateAndHeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*state.StateDB, *model.Header, error)
-	GetBlock(ctx context.Context, blockHash common.Hash) (*model.Block, error)
-	GetReceipts(ctx context.Context, blockHash common.Hash) (model.Receipts, error)
-	GetTd(blockHash common.Hash) *big.Int
+	HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*model.Header, error)
+	HeaderByHash(ctx context.Context, hash common.Hash) (*model.Header, error)
+	HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*model.Header, error)
+	BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*model.Block, error)
+	BlockByHash(ctx context.Context, hash common.Hash) (*model.Block, error)
+	BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*model.Block, error)
+	StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*state.StateDB, *model.Header, error)
+	StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*state.StateDB, *model.Header, error)
+	GetReceipts(ctx context.Context, hash common.Hash) (model.Receipts, error)
+	GetTd(hash common.Hash) *big.Int
 	GetEVM(ctx context.Context, msg blockchain.Message, state *state.StateDB, header *model.Header) (*evm.EVM, func() error, error)
 	SubscribeChainEvent(ch chan<- blockchain.ChainEvent) event.Subscription
 	SubscribeChainHeadEvent(ch chan<- blockchain.ChainHeadEvent) event.Subscription

@@ -5,7 +5,7 @@ import (
 	"math/big"
 
 	"errors"
-	"github.com/entropyio/go-entropy/account"
+	"github.com/entropyio/go-entropy/accounts"
 	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/blockchain/bloombits"
 	"github.com/entropyio/go-entropy/blockchain/mapper"
@@ -56,6 +56,23 @@ func (b *EntropyAPIBackend) HeaderByNumber(ctx context.Context, blockNr rpc.Bloc
 	return b.entropy.blockchain.GetHeaderByNumber(uint64(blockNr)), nil
 }
 
+func (b *EntropyAPIBackend) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*model.Header, error) {
+	if blockNr, ok := blockNrOrHash.Number(); ok {
+		return b.HeaderByNumber(ctx, blockNr)
+	}
+	if hash, ok := blockNrOrHash.Hash(); ok {
+		header := b.entropy.blockchain.GetHeaderByHash(hash)
+		if header == nil {
+			return nil, errors.New("header for hash not found")
+		}
+		if blockNrOrHash.RequireCanonical && b.entropy.blockchain.GetCanonicalHash(header.Number.Uint64()) != hash {
+			return nil, errors.New("hash is not currently canonical")
+		}
+		return header, nil
+	}
+	return nil, errors.New("invalid arguments; neither block nor hash specified")
+}
+
 func (b *EntropyAPIBackend) HeaderByHash(ctx context.Context, hash common.Hash) (*model.Header, error) {
 	return b.entropy.blockchain.GetHeaderByHash(hash), nil
 }
@@ -73,15 +90,40 @@ func (b *EntropyAPIBackend) BlockByNumber(ctx context.Context, blockNr rpc.Block
 	return b.entropy.blockchain.GetBlockByNumber(uint64(blockNr)), nil
 }
 
-func (b *EntropyAPIBackend) StateAndHeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*state.StateDB, *model.Header, error) {
+func (b *EntropyAPIBackend) BlockByHash(ctx context.Context, hash common.Hash) (*model.Block, error) {
+	return b.entropy.blockchain.GetBlockByHash(hash), nil
+}
+
+func (b *EntropyAPIBackend) BlockByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*model.Block, error) {
+	if blockNr, ok := blockNrOrHash.Number(); ok {
+		return b.BlockByNumber(ctx, blockNr)
+	}
+	if hash, ok := blockNrOrHash.Hash(); ok {
+		header := b.entropy.blockchain.GetHeaderByHash(hash)
+		if header == nil {
+			return nil, errors.New("header for hash not found")
+		}
+		if blockNrOrHash.RequireCanonical && b.entropy.blockchain.GetCanonicalHash(header.Number.Uint64()) != hash {
+			return nil, errors.New("hash is not currently canonical")
+		}
+		block := b.entropy.blockchain.GetBlock(hash, header.Number.Uint64())
+		if block == nil {
+			return nil, errors.New("header found, but block body is missing")
+		}
+		return block, nil
+	}
+	return nil, errors.New("invalid arguments; neither block nor hash specified")
+}
+
+func (b *EntropyAPIBackend) StateAndHeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*state.StateDB, *model.Header, error) {
 	// Pending state is only known by the miner
-	if blockNr == rpc.PendingBlockNumber {
+	if number == rpc.PendingBlockNumber {
 		block, stateDBObj := b.entropy.miner.Pending()
 		return stateDBObj, block.Header(), nil
 	}
 
 	// Otherwise resolve the block number and return its state
-	header, err := b.HeaderByNumber(ctx, blockNr)
+	header, err := b.HeaderByNumber(ctx, number)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -92,8 +134,25 @@ func (b *EntropyAPIBackend) StateAndHeaderByNumber(ctx context.Context, blockNr 
 	return stateDb, header, err
 }
 
-func (b *EntropyAPIBackend) GetBlock(ctx context.Context, hash common.Hash) (*model.Block, error) {
-	return b.entropy.blockchain.GetBlockByHash(hash), nil
+func (b *EntropyAPIBackend) StateAndHeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*state.StateDB, *model.Header, error) {
+	if blockNr, ok := blockNrOrHash.Number(); ok {
+		return b.StateAndHeaderByNumber(ctx, blockNr)
+	}
+	if hash, ok := blockNrOrHash.Hash(); ok {
+		header, err := b.HeaderByHash(ctx, hash)
+		if err != nil {
+			return nil, nil, err
+		}
+		if header == nil {
+			return nil, nil, errors.New("header for hash not found")
+		}
+		if blockNrOrHash.RequireCanonical && b.entropy.blockchain.GetCanonicalHash(header.Number.Uint64()) != hash {
+			return nil, nil, errors.New("hash is not currently canonical")
+		}
+		stateDb, err := b.entropy.BlockChain().StateAt(header.Root)
+		return stateDb, header, err
+	}
+	return nil, nil, errors.New("invalid arguments; neither block nor hash specified")
 }
 
 func (b *EntropyAPIBackend) GetReceipts(ctx context.Context, hash common.Hash) (model.Receipts, error) {
@@ -205,7 +264,7 @@ func (b *EntropyAPIBackend) EventMux() *event.TypeMux {
 	return b.entropy.EventMux()
 }
 
-func (b *EntropyAPIBackend) AccountManager() *account.Manager {
+func (b *EntropyAPIBackend) AccountManager() *accounts.Manager {
 	return b.entropy.AccountManager()
 }
 
