@@ -208,6 +208,7 @@ type ChainConfig struct {
 	ConstantinopleBlock *big.Int `json:"constantinopleBlock,omitempty"` // Constantinople switch block (nil = no fork, 0 = already activated)
 	PetersburgBlock     *big.Int `json:"petersburgBlock,omitempty"`     // Petersburg switch block (nil = same as Constantinople)
 	IstanbulBlock       *big.Int `json:"istanbulBlock,omitempty"`       // Istanbul switch block (nil = no fork, 0 = already on istanbul)
+	MuirGlacierBlock    *big.Int `json:"muirGlacierBlock,omitempty"`    // Eip-2384 (bomb delay) switch block (nil = no fork, 0 = already activated)
 	EWASMBlock          *big.Int `json:"ewasmBlock,omitempty"`          // EWASM switch block (nil = no fork, 0 = already activated)
 
 	// Various consensus engines
@@ -272,6 +273,7 @@ func (cc *ChainConfig) String() string {
 		cc.ConstantinopleBlock,
 		cc.PetersburgBlock,
 		cc.IstanbulBlock,
+		cc.MuirGlacierBlock,
 		engine,
 	)
 }
@@ -304,6 +306,11 @@ func (cc *ChainConfig) IsByzantium(num *big.Int) bool {
 // IsConstantinople returns whether num is either equal to the Constantinople fork block or greater.
 func (cc *ChainConfig) IsConstantinople(num *big.Int) bool {
 	return isForked(cc.ConstantinopleBlock, num)
+}
+
+// IsMuirGlacier returns whether num is either equal to the Muir Glacier (EIP-2384) fork block or greater.
+func (c *ChainConfig) IsMuirGlacier(num *big.Int) bool {
+	return isForked(c.MuirGlacierBlock, num)
 }
 
 // IsPetersburg returns whether num is either
@@ -359,6 +366,7 @@ func (cc *ChainConfig) CheckConfigForkOrder() error {
 		{"constantinopleBlock", cc.ConstantinopleBlock},
 		{"petersburgBlock", cc.PetersburgBlock},
 		{"istanbulBlock", cc.IstanbulBlock},
+		{"muirGlacierBlock", cc.MuirGlacierBlock},
 	} {
 		if lastFork.name != "" {
 			// Next one must be higher number

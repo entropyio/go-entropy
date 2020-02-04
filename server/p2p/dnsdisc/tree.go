@@ -1,19 +1,3 @@
-// Copyright 2018 The go-ethereum Authors
-// This file is part of the go-ethereum library.
-//
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The go-ethereum library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-
 package dnsdisc
 
 import (
@@ -22,14 +6,14 @@ import (
 	"encoding/base32"
 	"encoding/base64"
 	"fmt"
+	"github.com/entropyio/go-entropy/common/crypto"
+	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/server/p2p/enode"
+	"github.com/entropyio/go-entropy/server/p2p/enr"
 	"io"
 	"sort"
 	"strings"
 
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/p2p/enode"
-	"github.com/ethereum/go-ethereum/p2p/enr"
-	"github.com/ethereum/go-ethereum/rlp"
 	"golang.org/x/crypto/sha3"
 )
 
@@ -48,7 +32,7 @@ func (t *Tree) Sign(key *ecdsa.PrivateKey, domain string) (url string, err error
 	}
 	root.sig = sig
 	t.root = &root
-	link := &linkEntry{domain, &key.PublicKey}
+	link := newLinkEntry(domain, &key.PublicKey)
 	return link.String(), nil
 }
 
@@ -209,6 +193,7 @@ type (
 		node *enode.Node
 	}
 	linkEntry struct {
+		str    string
 		domain string
 		pubkey *ecdsa.PublicKey
 	}
@@ -246,7 +231,8 @@ func (e *rootEntry) sigHash() []byte {
 
 func (e *rootEntry) verifySignature(pubkey *ecdsa.PublicKey) bool {
 	sig := e.sig[:crypto.RecoveryIDOffset] // remove recovery id
-	return crypto.VerifySignature(crypto.FromECDSAPub(pubkey), e.sigHash(), sig)
+	enckey := crypto.FromECDSAPub(pubkey)
+	return crypto.VerifySignature(enckey, e.sigHash(), sig)
 }
 
 func (e *branchEntry) String() string {
@@ -258,8 +244,13 @@ func (e *enrEntry) String() string {
 }
 
 func (e *linkEntry) String() string {
-	pubkey := b32format.EncodeToString(crypto.CompressPubkey(e.pubkey))
-	return fmt.Sprintf("%s%s@%s", linkPrefix, pubkey, e.domain)
+	return linkPrefix + e.str
+}
+
+func newLinkEntry(domain string, pubkey *ecdsa.PublicKey) *linkEntry {
+	key := b32format.EncodeToString(crypto.CompressPubkey(pubkey))
+	str := key + "@" + domain
+	return &linkEntry{str, domain, pubkey}
 }
 
 // Entry Parsing
@@ -319,7 +310,7 @@ func parseLink(e string) (*linkEntry, error) {
 	if err != nil {
 		return nil, entryError{"link", errBadPubkey}
 	}
-	return &linkEntry{domain, key}, nil
+	return &linkEntry{e, domain, key}, nil
 }
 
 func parseBranch(e string) (entry, error) {
@@ -344,7 +335,7 @@ func parseENR(e string, validSchemes enr.IdentityScheme) (entry, error) {
 		return nil, entryError{"enr", errInvalidENR}
 	}
 	var rec enr.Record
-	if err := rlp.DecodeBytes(enc, &rec); err != nil {
+	if err := rlputil.DecodeBytes(enc, &rec); err != nil {
 		return nil, entryError{"enr", err}
 	}
 	n, err := enode.New(validSchemes, &rec)

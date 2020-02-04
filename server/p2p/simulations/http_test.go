@@ -21,15 +21,14 @@ import (
 	"github.com/entropyio/go-entropy/server/p2p/simulations/adapters"
 )
 
-var (
-	loglevel = flag.Int("loglevel", 2, "verbosity of logs")
-)
+func TestMain(m *testing.M) {
+	loglevel := flag.Int("loglevel", 2, "verbosity of logs")
 
-func init() {
 	flag.Parse()
 
 	//	log.PrintOrigins(true)
 	//	log.Root().SetHandler(log.LvlFilterHandler(log.Lvl(*loglevel), log.StreamHandler(colorable.NewColorableStderr(), log.TerminalFormat(true))))
+	os.Exit(m.Run())
 }
 
 // testService implements the node.Service interface and provides protocols
@@ -404,16 +403,8 @@ type expectEvents struct {
 }
 
 func (t *expectEvents) nodeEvent(id string, up bool) *Event {
-	node := Node{
-		Config: &adapters.NodeConfig{
-			ID: enode.HexID(id),
-		},
-		up: up,
-	}
-	return &Event{
-		Type: EventTypeNode,
-		Node: &node,
-	}
+	config := &adapters.NodeConfig{ID: enode.HexID(id)}
+	return &Event{Type: EventTypeNode, Node: newNode(nil, config, up)}
 }
 
 func (t *expectEvents) connEvent(one, other string, up bool) *Event {

@@ -1,28 +1,12 @@
-// Copyright 2018 The go-ethereum Authors
-// This file is part of the go-ethereum library.
-//
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The go-ethereum library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-
 package dnsdisc
 
 import (
+	"github.com/entropyio/go-entropy/common/hexutil"
+	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"reflect"
 	"testing"
 
 	"github.com/davecgh/go-spew/spew"
-	"github.com/ethereum/go-ethereum/common/hexutil"
-	"github.com/ethereum/go-ethereum/p2p/enode"
 )
 
 func TestParseRoot(t *testing.T) {
@@ -91,7 +75,7 @@ func TestParseEntry(t *testing.T) {
 		// Links
 		{
 			input: "enrtree://AKPYQIUQIL7PSIACI32J7FGZW56E5FKHEFCCOFHILBIMW3M6LWXS2@nodes.example.org",
-			e:     &linkEntry{"nodes.example.org", &testkey.PublicKey},
+			e:     &linkEntry{"AKPYQIUQIL7PSIACI32J7FGZW56E5FKHEFCCOFHILBIMW3M6LWXS2@nodes.example.org", "nodes.example.org", &testkey.PublicKey},
 		},
 		{
 			input: "enrtree://nodes.example.org",

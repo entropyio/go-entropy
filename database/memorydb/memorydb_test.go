@@ -1,7 +1,6 @@
 package memorydb
 
 import (
-	"bytes"
 	"testing"
 )
 

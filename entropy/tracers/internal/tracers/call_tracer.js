@@ -2,14 +2,14 @@
 // the internal calls made by a transaction, along with any useful information.
 {
 	// callstack is the current recursive call stack of the EVM execution.
-	callstack: [{}],
+	[{}],
 
 	// descended tracks whether we've just descended from an outer transaction into
 	// an inner call.
-	descended: false,
+	descended;: false,
 
 	// step is invoked for every opcode that the VM executes.
-	step: function(log, db) {
+	step;: function(log, db) {
 		// Capture any errors immediately
 		var error = log.getError();
 		if (error !== undefined) {
@@ -36,7 +36,7 @@
 				value:   '0x' + log.stack.peek(0).toString(16)
 			};
 			this.callstack.push(call);
-			this.descended = true
+			this.descended = true;
 			return;
 		}
 		// If a contract is being self destructed, gather that as a subcall too
@@ -75,7 +75,7 @@
 				call.value = '0x' + log.stack.peek(2).toString(16);
 			}
 			this.callstack.push(call);
-			this.descended = true
+			this.descended = true;
 			return;
 		}
 		// If we've just descended into an inner call, retrieve it's true allowance. We
@@ -214,7 +214,7 @@
 			error:   call.error,
 			time:    call.time,
 			calls:   call.calls,
-		}
+		};
 		for (var key in sorted) {
 			if (sorted[key] === undefined) {
 				delete sorted[key];

@@ -4,36 +4,34 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/entropyio/go-entropy"
+	"github.com/entropyio/go-entropy/blockchain"
+	"github.com/entropyio/go-entropy/blockchain/genesis"
+	"github.com/entropyio/go-entropy/blockchain/mapper"
+	"github.com/entropyio/go-entropy/blockchain/model"
+	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/common/crypto"
+	"github.com/entropyio/go-entropy/config"
+	"github.com/entropyio/go-entropy/consensus/ethash"
+	"github.com/entropyio/go-entropy/server/node"
 	"math/big"
 	"reflect"
 	"testing"
 	"time"
-
-	"github.com/ethereum/go-ethereum"
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/consensus/ethash"
-	"github.com/ethereum/go-ethereum/core"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/crypto"
-	"github.com/ethereum/go-ethereum/eth"
-	"github.com/ethereum/go-ethereum/node"
-	"github.com/ethereum/go-ethereum/params"
 )
 
-// Verify that Client implements the ethereum interfaces.
+// Verify that Client implements the entropy interfaces.
 var (
-	_ = ethereum.ChainReader(&Client{})
-	_ = ethereum.TransactionReader(&Client{})
-	_ = ethereum.ChainStateReader(&Client{})
-	_ = ethereum.ChainSyncReader(&Client{})
-	_ = ethereum.ContractCaller(&Client{})
-	_ = ethereum.GasEstimator(&Client{})
-	_ = ethereum.GasPricer(&Client{})
-	_ = ethereum.LogFilterer(&Client{})
-	_ = ethereum.PendingStateReader(&Client{})
-	// _ = ethereum.PendingStateEventer(&Client{})
-	_ = ethereum.PendingContractCaller(&Client{})
+	_ = entropy.ChainReader(&Client{})
+	_ = entropy.TransactionReader(&Client{})
+	_ = entropy.ChainStateReader(&Client{})
+	_ = entropy.ChainSyncReader(&Client{})
+	_ = entropy.ContractCaller(&Client{})
+	_ = entropy.GasEstimator(&Client{})
+	_ = entropy.GasPricer(&Client{})
+	_ = entropy.LogFilterer(&Client{})
+	_ = entropy.PendingStateReader(&Client{})
+	_ = entropy.PendingContractCaller(&Client{})
 )
 
 func TestToFilterArg(t *testing.T) {
@@ -47,13 +45,13 @@ func TestToFilterArg(t *testing.T) {
 
 	for _, testCase := range []struct {
 		name   string
-		input  ethereum.FilterQuery
+		input  entropy.FilterQuery
 		output interface{}
 		err    error
 	}{
 		{
 			"without BlockHash",
-			ethereum.FilterQuery{
+			entropy.FilterQuery{
 				Addresses: addresses,
 				FromBlock: big.NewInt(1),
 				ToBlock:   big.NewInt(2),
@@ -69,7 +67,7 @@ func TestToFilterArg(t *testing.T) {
 		},
 		{
 			"with nil fromBlock and nil toBlock",
-			ethereum.FilterQuery{
+			entropy.FilterQuery{
 				Addresses: addresses,
 				Topics:    [][]common.Hash{},
 			},
@@ -83,7 +81,7 @@ func TestToFilterArg(t *testing.T) {
 		},
 		{
 			"with blockhash",
-			ethereum.FilterQuery{
+			entropy.FilterQuery{
 				Addresses: addresses,
 				BlockHash: &blockHash,
 				Topics:    [][]common.Hash{},
@@ -97,7 +95,7 @@ func TestToFilterArg(t *testing.T) {
 		},
 		{
 			"with blockhash and from block",
-			ethereum.FilterQuery{
+			entropy.FilterQuery{
 				Addresses: addresses,
 				BlockHash: &blockHash,
 				FromBlock: big.NewInt(1),
@@ -108,7 +106,7 @@ func TestToFilterArg(t *testing.T) {
 		},
 		{
 			"with blockhash and to block",
-			ethereum.FilterQuery{
+			entropy.FilterQuery{
 				Addresses: addresses,
 				BlockHash: &blockHash,
 				ToBlock:   big.NewInt(1),
@@ -119,7 +117,7 @@ func TestToFilterArg(t *testing.T) {
 		},
 		{
 			"with blockhash and both from / to block",
-			ethereum.FilterQuery{
+			entropy.FilterQuery{
 				Addresses: addresses,
 				BlockHash: &blockHash,
 				FromBlock: big.NewInt(1),
@@ -152,17 +150,17 @@ var (
 	testBalance = big.NewInt(2e10)
 )
 
-func newTestBackend(t *testing.T) (*node.Node, []*types.Block) {
+func newTestBackend(t *testing.T) (*node.Node, []*model.Block) {
 	// Generate test chain.
 	genesis, blocks := generateTestChain()
 
-	// Start Ethereum service.
-	var ethservice *eth.Ethereum
+	// Start entropy service.
+	var ethservice *entropy.Entropy
 	n, err := node.New(&node.Config{})
 	n.Register(func(ctx *node.ServiceContext) (node.Service, error) {
-		config := &eth.Config{Genesis: genesis}
+		config := &entropy.Config{Genesis: genesis}
 		config.Ethash.PowMode = ethash.ModeFake
-		ethservice, err = eth.New(ctx, config)
+		ethservice, err = entropy.New(ctx, config)
 		return ethservice, err
 	})
 
@@ -176,23 +174,23 @@ func newTestBackend(t *testing.T) (*node.Node, []*types.Block) {
 	return n, blocks
 }
 
-func generateTestChain() (*core.Genesis, []*types.Block) {
-	db := rawdb.NewMemoryDatabase()
-	config := params.AllEthashProtocolChanges
-	genesis := &core.Genesis{
+func generateTestChain() (*genesis.Genesis, []*model.Block) {
+	db := mapper.NewMemoryDatabase()
+	config := config.EthashChainConfig
+	genesis := &genesis.Genesis{
 		Config:    config,
-		Alloc:     core.GenesisAlloc{testAddr: {Balance: testBalance}},
+		Alloc:     genesis.GenesisAlloc{testAddr: {Balance: testBalance}},
 		ExtraData: []byte("test genesis"),
 		Timestamp: 9000,
 	}
-	generate := func(i int, g *core.BlockGen) {
+	generate := func(i int, g *blockchain.BlockGen) {
 		g.OffsetTime(5)
 		g.SetExtra([]byte("test"))
 	}
 	gblock := genesis.ToBlock(db)
 	engine := ethash.NewFaker()
-	blocks, _ := core.GenerateChain(config, gblock, engine, db, 1, generate)
-	blocks = append([]*types.Block{gblock}, blocks...)
+	blocks, _ := blockchain.GenerateChain(config, gblock, engine, db, 1, generate)
+	blocks = append([]*model.Block{gblock}, blocks...)
 	return genesis, blocks
 }
 
@@ -204,7 +202,7 @@ func TestHeader(t *testing.T) {
 
 	tests := map[string]struct {
 		block   *big.Int
-		want    *types.Header
+		want    *model.Header
 		wantErr error
 	}{
 		"genesis": {

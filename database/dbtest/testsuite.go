@@ -1,33 +1,16 @@
-// Copyright 2019 The go-ethereum Authors
-// This file is part of the go-ethereum library.
-//
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The go-ethereum library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-
 package dbtest
 
 import (
 	"bytes"
+	"github.com/entropyio/go-entropy/database"
 	"reflect"
 	"sort"
 	"testing"
-
-	"github.com/ethereum/go-ethereum/ethdb"
 )
 
 // TestDatabaseSuite runs a suite of tests against a KeyValueStore database
 // implementation.
-func TestDatabaseSuite(t *testing.T, New func() ethdb.KeyValueStore) {
+func TestDatabaseSuite(t *testing.T, New func() database.KeyValueStore) {
 	t.Run("Iterator", func(t *testing.T) {
 		tests := []struct {
 			content map[string]string
@@ -305,7 +288,7 @@ func TestDatabaseSuite(t *testing.T, New func() ethdb.KeyValueStore) {
 
 }
 
-func iterateKeys(it ethdb.Iterator) []string {
+func iterateKeys(it database.Iterator) []string {
 	keys := []string{}
 	for it.Next() {
 		keys = append(keys, string(it.Key()))

@@ -23,7 +23,7 @@ type API struct {
 //   result[2] - 32 bytes hex encoded boundary condition ("target"), 2^256/difficulty
 //   result[3] - hex encoded block number
 func (api *API) GetWork() ([4]string, error) {
-	if api.ethash.config.PowMode != ModeNormal && api.ethash.config.PowMode != ModeTest {
+	if api.ethash.remote == nil {
 		return [4]string{}, errors.New("not supported")
 	}
 
@@ -33,8 +33,8 @@ func (api *API) GetWork() ([4]string, error) {
 	)
 
 	select {
-	case api.ethash.fetchWorkCh <- &sealWork{errc: errc, res: workCh}:
-	case <-api.ethash.exitCh:
+	case api.ethash.remote.fetchWorkCh <- &sealWork{errc: errc, res: workCh}:
+	case <-api.ethash.remote.exitCh:
 		return [4]string{}, errEthashStopped
 	}
 
@@ -50,20 +50,20 @@ func (api *API) GetWork() ([4]string, error) {
 // It returns an indication if the work was accepted.
 // Note either an invalid solution, a stale work a non-existent work will return false.
 func (api *API) SubmitWork(nonce model.BlockNonce, hash, digest common.Hash) bool {
-	if api.ethash.config.PowMode != ModeNormal && api.ethash.config.PowMode != ModeTest {
+	if api.ethash.remote == nil {
 		return false
 	}
 
 	var errc = make(chan error, 1)
 
 	select {
-	case api.ethash.submitWorkCh <- &mineResult{
+	case api.ethash.remote.submitWorkCh <- &mineResult{
 		nonce:     nonce,
 		mixDigest: digest,
 		hash:      hash,
 		errc:      errc,
 	}:
-	case <-api.ethash.exitCh:
+	case <-api.ethash.remote.exitCh:
 		return false
 	}
 
@@ -78,15 +78,15 @@ func (api *API) SubmitWork(nonce model.BlockNonce, hash, digest common.Hash) boo
 // It accepts the miner hash rate and an identifier which must be unique
 // between nodes.
 func (api *API) SubmitHashRate(rate hexutil.Uint64, id common.Hash) bool {
-	if api.ethash.config.PowMode != ModeNormal && api.ethash.config.PowMode != ModeTest {
+	if api.ethash.remote == nil {
 		return false
 	}
 
 	var done = make(chan struct{}, 1)
 
 	select {
-	case api.ethash.submitRateCh <- &hashrate{done: done, rate: uint64(rate), id: id}:
-	case <-api.ethash.exitCh:
+	case api.ethash.remote.submitRateCh <- &hashrate{done: done, rate: uint64(rate), id: id}:
+	case <-api.ethash.remote.exitCh:
 		return false
 	}
 

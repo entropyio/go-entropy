@@ -96,14 +96,14 @@ func New(root common.Hash, db StateDatabase) (*StateDB, error) {
 		return nil, err
 	}
 	return &StateDB{
-		db:                db,
-		trie:              tr,
-		stateObjects:      make(map[common.Address]*stateObject),
+		db:                  db,
+		trie:                tr,
+		stateObjects:        make(map[common.Address]*stateObject),
 		stateObjectsPending: make(map[common.Address]struct{}),
-		stateObjectsDirty: make(map[common.Address]struct{}),
-		logs:              make(map[common.Hash][]*model.Log),
-		preimages:         make(map[common.Hash][]byte),
-		journal:           newJournal(),
+		stateObjectsDirty:   make(map[common.Address]struct{}),
+		logs:                make(map[common.Hash][]*model.Log),
+		preimages:           make(map[common.Hash][]byte),
+		journal:             newJournal(),
 	}, nil
 }
 
@@ -188,7 +188,7 @@ func (stateDB *StateDB) AddRefund(gas uint64) {
 func (stateDB *StateDB) SubRefund(gas uint64) {
 	stateDB.journal.append(refundChange{prev: stateDB.refund})
 	if gas > stateDB.refund {
-		panic("Refund counter below zero")
+		panic(fmt.Sprintf("Refund counter below zero (gas: %d > refund: %d)", gas, stateDB.refund))
 	}
 	stateDB.refund -= gas
 }
@@ -441,7 +441,6 @@ func (stateDB *StateDB) deleteStateObject(stateObject *stateObject) {
 		defer func(start time.Time) { stateDB.AccountUpdates += time.Since(start) }(time.Now())
 	}
 	// Delete the account from the trie
-	stateObject.deleted = true
 	addr := stateObject.Address()
 	stateDB.setError(stateDB.trie.TryDelete(addr[:]))
 }

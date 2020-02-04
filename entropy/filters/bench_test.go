@@ -1,35 +1,17 @@
-// Copyright 2017 The go-ethereum Authors
-// This file is part of the go-ethereum library.
-//
-// The go-ethereum library is free software: you can redistribute it and/or modify
-// it under the terms of the GNU Lesser General Public License as published by
-// the Free Software Foundation, either version 3 of the License, or
-// (at your option) any later version.
-//
-// The go-ethereum library is distributed in the hope that it will be useful,
-// but WITHOUT ANY WARRANTY; without even the implied warranty of
-// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
-// GNU Lesser General Public License for more details.
-//
-// You should have received a copy of the GNU Lesser General Public License
-// along with the go-ethereum library. If not, see <http://www.gnu.org/licenses/>.
-
 package filters
 
 import (
 	"context"
 	"fmt"
+	"github.com/entropyio/go-entropy/blockchain/bloombits"
+	"github.com/entropyio/go-entropy/blockchain/mapper"
+	"github.com/entropyio/go-entropy/blockchain/model"
+	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/common/bitutil"
+	"github.com/entropyio/go-entropy/database"
+	"github.com/entropyio/go-entropy/server/node"
 	"testing"
 	"time"
-
-	"github.com/ethereum/go-ethereum/common"
-	"github.com/ethereum/go-ethereum/common/bitutil"
-	"github.com/ethereum/go-ethereum/core/bloombits"
-	"github.com/ethereum/go-ethereum/core/rawdb"
-	"github.com/ethereum/go-ethereum/core/types"
-	"github.com/ethereum/go-ethereum/ethdb"
-	"github.com/ethereum/go-ethereum/event"
-	"github.com/ethereum/go-ethereum/node"
 )
 
 func BenchmarkBloomBits512(b *testing.B) {
@@ -66,18 +48,18 @@ func benchmarkBloomBits(b *testing.B, sectionSize uint64) {
 	benchDataDir := node.DefaultDataDir() + "/geth/chaindata"
 	b.Log("Running bloombits benchmark   section size:", sectionSize)
 
-	db, err := rawdb.NewLevelDBDatabase(benchDataDir, 128, 1024, "")
+	db, err := mapper.NewLevelDBDatabase(benchDataDir, 128, 1024, "")
 	if err != nil {
 		b.Fatalf("error opening database at %v: %v", benchDataDir, err)
 	}
-	head := rawdb.ReadHeadBlockHash(db)
+	head := mapper.ReadHeadBlockHash(db)
 	if head == (common.Hash{}) {
 		b.Fatalf("chain data not found at %v", benchDataDir)
 	}
 
 	clearBloomBits(db)
 	b.Log("Generating bloombits data...")
-	headNum := rawdb.ReadHeaderNumber(db, head)
+	headNum := mapper.ReadHeaderNumber(db, head)
 	if headNum == nil || *headNum < sectionSize+512 {
 		b.Fatalf("not enough blocks for running a benchmark")
 	}
@@ -90,17 +72,17 @@ func benchmarkBloomBits(b *testing.B, sectionSize uint64) {
 		if err != nil {
 			b.Fatalf("failed to create generator: %v", err)
 		}
-		var header *types.Header
+		var header *model.Header
 		for i := sectionIdx * sectionSize; i < (sectionIdx+1)*sectionSize; i++ {
-			hash := rawdb.ReadCanonicalHash(db, i)
-			header = rawdb.ReadHeader(db, hash, i)
+			hash := mapper.ReadCanonicalHash(db, i)
+			header = mapper.ReadHeader(db, hash, i)
 			if header == nil {
 				b.Fatalf("Error creating bloomBits data")
 			}
 			bc.AddBloom(uint(i-sectionIdx*sectionSize), header.Bloom)
 		}
-		sectionHead := rawdb.ReadCanonicalHash(db, (sectionIdx+1)*sectionSize-1)
-		for i := 0; i < types.BloomBitLength; i++ {
+		sectionHead := mapper.ReadCanonicalHash(db, (sectionIdx+1)*sectionSize-1)
+		for i := 0; i < model.BloomBitLength; i++ {
 			data, err := bc.Bitset(uint(i))
 			if err != nil {
 				b.Fatalf("failed to retrieve bitset: %v", err)
@@ -108,7 +90,7 @@ func benchmarkBloomBits(b *testing.B, sectionSize uint64) {
 			comp := bitutil.CompressBytes(data)
 			dataSize += uint64(len(data))
 			compSize += uint64(len(comp))
-			rawdb.WriteBloomBits(db, uint(i), sectionIdx, sectionHead, comp)
+			mapper.WriteBloomBits(db, uint(i), sectionIdx, sectionHead, comp)
 		}
 		//if sectionIdx%50 == 0 {
 		//	b.Log(" section", sectionIdx, "/", cnt)
@@ -122,14 +104,13 @@ func benchmarkBloomBits(b *testing.B, sectionSize uint64) {
 
 	b.Log("Running filter benchmarks...")
 	start = time.Now()
-	mux := new(event.TypeMux)
 	var backend *testBackend
 
 	for i := 0; i < benchFilterCnt; i++ {
 		if i%20 == 0 {
 			db.Close()
-			db, _ = rawdb.NewLevelDBDatabase(benchDataDir, 128, 1024, "")
-			backend = &testBackend{mux, db, cnt, new(event.Feed), new(event.Feed), new(event.Feed), new(event.Feed)}
+			db, _ = mapper.NewLevelDBDatabase(benchDataDir, 128, 1024, "")
+			backend = &testBackend{db: db, sections: cnt}
 		}
 		var addr common.Address
 		addr[0] = byte(i)
@@ -147,7 +128,7 @@ func benchmarkBloomBits(b *testing.B, sectionSize uint64) {
 
 var bloomBitsPrefix = []byte("bloomBits-")
 
-func clearBloomBits(db ethdb.Database) {
+func clearBloomBits(db database.Database) {
 	fmt.Println("Clearing bloombits data...")
 	it := db.NewIteratorWithPrefix(bloomBitsPrefix)
 	for it.Next() {
@@ -159,22 +140,21 @@ func clearBloomBits(db ethdb.Database) {
 func BenchmarkNoBloomBits(b *testing.B) {
 	benchDataDir := node.DefaultDataDir() + "/geth/chaindata"
 	b.Log("Running benchmark without bloombits")
-	db, err := rawdb.NewLevelDBDatabase(benchDataDir, 128, 1024, "")
+	db, err := mapper.NewLevelDBDatabase(benchDataDir, 128, 1024, "")
 	if err != nil {
 		b.Fatalf("error opening database at %v: %v", benchDataDir, err)
 	}
-	head := rawdb.ReadHeadBlockHash(db)
+	head := mapper.ReadHeadBlockHash(db)
 	if head == (common.Hash{}) {
 		b.Fatalf("chain data not found at %v", benchDataDir)
 	}
-	headNum := rawdb.ReadHeaderNumber(db, head)
+	headNum := mapper.ReadHeaderNumber(db, head)
 
 	clearBloomBits(db)
 
 	b.Log("Running filter benchmarks...")
 	start := time.Now()
-	mux := new(event.TypeMux)
-	backend := &testBackend{mux, db, 0, new(event.Feed), new(event.Feed), new(event.Feed), new(event.Feed)}
+	backend := &testBackend{db: db}
 	filter := NewRangeFilter(backend, 0, int64(*headNum), []common.Address{{}}, nil)
 	filter.Logs(context.Background())
 	d := time.Since(start)

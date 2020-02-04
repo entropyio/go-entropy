@@ -790,9 +790,8 @@ func ExampleDecode() {
 	input, _ := hex.DecodeString("C90A1486666F6F626172")
 
 	type example struct {
-		A, B    uint
-		private uint // private fields are ignored
-		String  string
+		A, B   uint
+		String string
 	}
 
 	var s example
@@ -803,7 +802,7 @@ func ExampleDecode() {
 		fmt.Printf("Decoded value: %#v\n", s)
 	}
 	// Output:
-	// Decoded value: rlputil.example{A:0xa, B:0x14, private:0x0, String:"foobar"}
+	// Decoded value: rlputil.example{A:0xa, B:0x14, String:"foobar"}
 }
 
 func ExampleDecode_structTagNil() {

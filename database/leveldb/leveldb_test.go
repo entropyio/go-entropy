@@ -3,12 +3,6 @@
 package leveldb
 
 import (
-	"bytes"
-	"fmt"
-	"io/ioutil"
-	"os"
-	"strconv"
-	"sync"
 	"testing"
 )
 

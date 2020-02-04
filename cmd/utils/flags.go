@@ -16,7 +16,6 @@ import (
 	"github.com/entropyio/go-entropy/consensus"
 	"github.com/entropyio/go-entropy/consensus/clique"
 	"github.com/entropyio/go-entropy/consensus/ethash"
-	"github.com/entropyio/go-entropy/dashboard"
 	"github.com/entropyio/go-entropy/database"
 	"github.com/entropyio/go-entropy/entropy"
 	"github.com/entropyio/go-entropy/entropy/downloader"
@@ -58,6 +57,17 @@ SUBCOMMANDS:
 {{range $categorized.Flags}}{{"\t"}}{{.}}
 {{end}}
 {{end}}{{end}}`
+
+	OriginCommandHelpTemplate = `{{.Name}}{{if .Subcommands}} command{{end}}{{if .Flags}} [command options]{{end}} [arguments...]
+{{if .Description}}{{.Description}}
+{{end}}{{if .Subcommands}}
+SUBCOMMANDS:
+	{{range .Subcommands}}{{.Name}}{{with .ShortName}}, {{.}}{{end}}{{ "\t" }}{{.Usage}}
+	{{end}}{{end}}{{if .Flags}}
+OPTIONS:
+{{range $.Flags}}{{"\t"}}{{.}}
+{{end}}
+{{end}}`
 )
 
 func init() {
@@ -250,26 +260,6 @@ var (
 		Usage: "Ultra light server sends announcements only",
 	}
 
-	// Dashboard settings
-	DashboardEnabledFlag = cli.BoolFlag{
-		Name:  "dashboard",
-		Usage: "Enable the dashboard",
-	}
-	DashboardAddrFlag = cli.StringFlag{
-		Name:  "dashboard.addr",
-		Usage: "Dashboard listening interface",
-		Value: dashboard.DefaultConfig.Host,
-	}
-	DashboardPortFlag = cli.IntFlag{
-		Name:  "dashboard.host",
-		Usage: "Dashboard listening port",
-		Value: dashboard.DefaultConfig.Port,
-	}
-	DashboardRefreshFlag = cli.DurationFlag{
-		Name:  "dashboard.refresh",
-		Usage: "Dashboard metrics collection refresh rate",
-		Value: dashboard.DefaultConfig.Refresh,
-	}
 	// Ethash settings
 	EthashCacheDirFlag = DirectoryFlag{
 		Name:  "ethash.cachedir",
@@ -1049,7 +1039,7 @@ func SetP2PConfig(ctx *cli.Context, cfg *p2p.Config) {
 	//setBootstrapNodesV5(ctx, cfg)
 
 	lightClient := ctx.GlobalString(SyncModeFlag.Name) == "light"
-	lightServer := (ctx.GlobalInt(LightLegacyServFlag.Name) != 0 || ctx.GlobalInt(LightServeFlag.Name) != 0)
+	lightServer := ctx.GlobalInt(LightLegacyServFlag.Name) != 0 || ctx.GlobalInt(LightServeFlag.Name) != 0
 
 	lightPeers := ctx.GlobalInt(LightLegacyPeersFlag.Name)
 	if ctx.GlobalIsSet(LightMaxPeersFlag.Name) {
@@ -1441,13 +1431,6 @@ func SetEntropyConfig(ctx *cli.Context, stack *node.Node, cfg *entropy.Config) {
 	}
 }
 
-// SetDashboardConfig applies dashboard related command line flags to the config.
-func SetDashboardConfig(ctx *cli.Context, cfg *dashboard.Config) {
-	cfg.Host = ctx.GlobalString(DashboardAddrFlag.Name)
-	cfg.Port = ctx.GlobalInt(DashboardPortFlag.Name)
-	cfg.Refresh = ctx.GlobalDuration(DashboardRefreshFlag.Name)
-}
-
 // RegisterEthService adds an Ethereum client to the stack.
 func RegisterEntropyService(stack *node.Node, cfg *entropy.Config) {
 	var err error
@@ -1468,13 +1451,6 @@ func RegisterEntropyService(stack *node.Node, cfg *entropy.Config) {
 	if err != nil {
 		Fatalf("Failed to register the Ethereum service: %v", err)
 	}
-}
-
-// RegisterDashboardService adds a dashboard to the stack.
-func RegisterDashboardService(stack *node.Node, cfg *dashboard.Config, commit string) {
-	stack.Register(func(ctx *node.ServiceContext) (node.Service, error) {
-		return dashboard.New(cfg, commit, ctx.ResolvePath("logs")), nil
-	})
 }
 
 // RegisterShhService configures Whisper and adds it to the given node.

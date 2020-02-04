@@ -19,7 +19,6 @@ var log = logger.NewLogger("[filters]")
 
 type Backend interface {
 	ChainDb() database.Database
-	EventMux() *event.TypeMux
 	HeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*model.Header, error)
 	HeaderByHash(ctx context.Context, blockHash common.Hash) (*model.Header, error)
 	GetReceipts(ctx context.Context, blockHash common.Hash) (model.Receipts, error)
@@ -29,6 +28,7 @@ type Backend interface {
 	SubscribeChainEvent(ch chan<- blockchain.ChainEvent) event.Subscription
 	SubscribeRemovedLogsEvent(ch chan<- blockchain.RemovedLogsEvent) event.Subscription
 	SubscribeLogsEvent(ch chan<- []*model.Log) event.Subscription
+	SubscribePendingLogsEvent(ch chan<- []*model.Log) event.Subscription
 
 	BloomStatus() (uint64, uint64)
 	ServiceFilter(ctx context.Context, session *bloombits.MatcherSession)

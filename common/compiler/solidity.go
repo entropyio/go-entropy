@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io/ioutil"
 	"os/exec"
-	"regexp"
 	"strconv"
 	"strings"
 )

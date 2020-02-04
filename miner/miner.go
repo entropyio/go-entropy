@@ -59,7 +59,7 @@ func New(eth Backend, config *Config, chainConfig *config.ChainConfig, mux *even
 		mux:      mux,
 		engine:   engine,
 		exitCh:   make(chan struct{}),
-		worker:   newWorker(config, chainConfig, engine, eth, mux, isLocalBlock),
+		worker:   newWorker(config, chainConfig, engine, eth, mux, isLocalBlock, true),
 		canStart: 1,
 	}
 	go miner.update()
@@ -170,4 +170,10 @@ func (miner *Miner) PendingBlock() *model.Block {
 func (miner *Miner) SetEntropyBase(addr common.Address) {
 	miner.coinbase = addr
 	miner.worker.setEntropyBase(addr)
+}
+
+// SubscribePendingLogs starts delivering logs from pending transactions
+// to the given channel.
+func (miner *Miner) SubscribePendingLogs(ch chan<- []*model.Log) event.Subscription {
+	return miner.worker.pendingLogsFeed.Subscribe(ch)
 }

@@ -2,7 +2,6 @@ package model
 
 import (
 	"bytes"
-	"fmt"
 	"math/big"
 	"reflect"
 	"testing"

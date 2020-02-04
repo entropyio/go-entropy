@@ -43,17 +43,17 @@ func (b *EntropyAPIBackend) SetHead(number uint64) {
 	b.entropy.blockchain.SetHead(number)
 }
 
-func (b *EntropyAPIBackend) HeaderByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*model.Header, error) {
+func (b *EntropyAPIBackend) HeaderByNumber(ctx context.Context, number rpc.BlockNumber) (*model.Header, error) {
 	// Pending block is only known by the miner
-	if blockNr == rpc.PendingBlockNumber {
+	if number == rpc.PendingBlockNumber {
 		block := b.entropy.miner.PendingBlock()
 		return block.Header(), nil
 	}
 	// Otherwise resolve and return the block
-	if blockNr == rpc.LatestBlockNumber {
+	if number == rpc.LatestBlockNumber {
 		return b.entropy.blockchain.CurrentBlock().Header(), nil
 	}
-	return b.entropy.blockchain.GetHeaderByNumber(uint64(blockNr)), nil
+	return b.entropy.blockchain.GetHeaderByNumber(uint64(number)), nil
 }
 
 func (b *EntropyAPIBackend) HeaderByNumberOrHash(ctx context.Context, blockNrOrHash rpc.BlockNumberOrHash) (*model.Header, error) {
@@ -77,17 +77,17 @@ func (b *EntropyAPIBackend) HeaderByHash(ctx context.Context, hash common.Hash) 
 	return b.entropy.blockchain.GetHeaderByHash(hash), nil
 }
 
-func (b *EntropyAPIBackend) BlockByNumber(ctx context.Context, blockNr rpc.BlockNumber) (*model.Block, error) {
+func (b *EntropyAPIBackend) BlockByNumber(ctx context.Context, number rpc.BlockNumber) (*model.Block, error) {
 	// Pending block is only known by the miner
-	if blockNr == rpc.PendingBlockNumber {
+	if number == rpc.PendingBlockNumber {
 		block := b.entropy.miner.PendingBlock()
 		return block, nil
 	}
 	// Otherwise resolve and return the block
-	if blockNr == rpc.LatestBlockNumber {
+	if number == rpc.LatestBlockNumber {
 		return b.entropy.blockchain.CurrentBlock(), nil
 	}
-	return b.entropy.blockchain.GetBlockByNumber(uint64(blockNr)), nil
+	return b.entropy.blockchain.GetBlockByNumber(uint64(number)), nil
 }
 
 func (b *EntropyAPIBackend) BlockByHash(ctx context.Context, hash common.Hash) (*model.Block, error) {
@@ -185,6 +185,10 @@ func (b *EntropyAPIBackend) GetEVM(ctx context.Context, msg blockchain.Message, 
 
 func (b *EntropyAPIBackend) SubscribeRemovedLogsEvent(ch chan<- blockchain.RemovedLogsEvent) event.Subscription {
 	return b.entropy.BlockChain().SubscribeRemovedLogsEvent(ch)
+}
+
+func (b *EntropyAPIBackend) SubscribePendingLogsEvent(ch chan<- []*model.Log) event.Subscription {
+	return b.entropy.miner.SubscribePendingLogs(ch)
 }
 
 func (b *EntropyAPIBackend) SubscribeChainEvent(ch chan<- blockchain.ChainEvent) event.Subscription {

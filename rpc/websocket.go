@@ -46,7 +46,7 @@ func (s *Server) WebsocketHandler(allowedOrigins []string) http.Handler {
 			return
 		}
 		codec := newWebsocketCodec(conn)
-		s.ServeCodec(codec, OptionMethodInvocation|OptionSubscriptions)
+		s.ServeCodec(codec, 0)
 	})
 }
 
@@ -107,20 +107,12 @@ func (e wsHandshakeError) Error() string {
 	return s
 }
 
-// DialWebsocket creates a new RPC client that communicates with a JSON-RPC server
-// that is listening on the given endpoint.
-//
-// The context is used for the initial connection establishment. It does not
-// affect subsequent interactions with the client.
-func DialWebsocket(ctx context.Context, endpoint, origin string) (*Client, error) {
+// DialWebsocketWithDialer creates a new RPC client that communicates with a JSON-RPC server
+// that is listening on the given endpoint using the provided dialer.
+func DialWebsocketWithDialer(ctx context.Context, endpoint, origin string, dialer websocket.Dialer) (*Client, error) {
 	endpoint, header, err := wsClientHeaders(endpoint, origin)
 	if err != nil {
 		return nil, err
-	}
-	dialer := websocket.Dialer{
-		ReadBufferSize:  wsReadBuffer,
-		WriteBufferSize: wsWriteBuffer,
-		WriteBufferPool: wsBufferPool,
 	}
 	return newClient(ctx, func(ctx context.Context) (ServerCodec, error) {
 		conn, resp, err := dialer.DialContext(ctx, endpoint, header)
@@ -133,6 +125,20 @@ func DialWebsocket(ctx context.Context, endpoint, origin string) (*Client, error
 		}
 		return newWebsocketCodec(conn), nil
 	})
+}
+
+// DialWebsocket creates a new RPC client that communicates with a JSON-RPC server
+// that is listening on the given endpoint.
+//
+// The context is used for the initial connection establishment. It does not
+// affect subsequent interactions with the client.
+func DialWebsocket(ctx context.Context, endpoint, origin string) (*Client, error) {
+	dialer := websocket.Dialer{
+		ReadBufferSize:  wsReadBuffer,
+		WriteBufferSize: wsWriteBuffer,
+		WriteBufferPool: wsBufferPool,
+	}
+	return DialWebsocketWithDialer(ctx, endpoint, origin, dialer)
 }
 
 func wsClientHeaders(endpoint, origin string) (string, http.Header, error) {
@@ -154,5 +160,5 @@ func wsClientHeaders(endpoint, origin string) (string, http.Header, error) {
 
 func newWebsocketCodec(conn *websocket.Conn) ServerCodec {
 	conn.SetReadLimit(maxRequestContentLength)
-	return newCodec(conn, conn.WriteJSON, conn.ReadJSON)
+	return NewFuncCodec(conn, conn.WriteJSON, conn.ReadJSON)
 }

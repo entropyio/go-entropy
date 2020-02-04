@@ -5,7 +5,6 @@ import (
 	"github.com/entropyio/go-entropy/cmd/entropy/subcmd"
 	"github.com/entropyio/go-entropy/cmd/utils"
 	"github.com/entropyio/go-entropy/logger"
-	"github.com/entropyio/go-entropy/server/node"
 	"gopkg.in/urfave/cli.v1"
 	"os"
 	"runtime"
@@ -43,12 +42,6 @@ func init() {
 	app.Before = func(context *cli.Context) error {
 		log.Debug("call app.Before....")
 		runtime.GOMAXPROCS(runtime.NumCPU())
-
-		logDir := ""
-		if context.GlobalBool(utils.DashboardEnabledFlag.Name) {
-			logDir = (&node.Config{DataDir: utils.MakeDataDir(context)}).ResolvePath("logs")
-		}
-		log.Debugf("set dashboard dir: %s", logDir)
 
 		return nil
 	}

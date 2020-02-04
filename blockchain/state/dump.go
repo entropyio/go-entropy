@@ -31,7 +31,9 @@ type Dump struct {
 }
 
 // iterativeDump is a 'collector'-implementation which dump output line-by-line iteratively
-type iterativeDump json.Encoder
+type iterativeDump struct {
+	*json.Encoder
+}
 
 // Collector interface which the state trie calls during iteration
 type collector interface {
@@ -61,10 +63,10 @@ func (dump iterativeDump) onAccount(addr common.Address, account DumpAccount) {
 	if addr != (common.Address{}) {
 		dumpAccount.Address = &addr
 	}
-	(*json.Encoder)(&dump).Encode(dumpAccount)
+	dump.Encode(dumpAccount)
 }
 func (dump iterativeDump) onRoot(root common.Hash) {
-	(*json.Encoder)(&dump).Encode(struct {
+	dump.Encode(struct {
 		Root common.Hash `json:"root"`
 	}{root})
 }
@@ -138,5 +140,5 @@ func (stateDB *StateDB) Dump(excludeCode, excludeStorage, excludeMissingPreimage
 
 // IterativeDump dumps out accounts as json-objects, delimited by linebreaks on stdout
 func (stateDB *StateDB) IterativeDump(excludeCode, excludeStorage, excludeMissingPreimages bool, output *json.Encoder) {
-	stateDB.dump(iterativeDump(*output), excludeCode, excludeStorage, excludeMissingPreimages)
+	stateDB.dump(iterativeDump{output}, excludeCode, excludeStorage, excludeMissingPreimages)
 }

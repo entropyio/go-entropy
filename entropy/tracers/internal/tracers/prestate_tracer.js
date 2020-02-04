@@ -2,10 +2,10 @@
 // the transaction from a custom assembled genesis block.
 {
 	// prestate is the genesis that we're building.
-	prestate: null,
+	null,
 
 	// lookupAccount injects the specified account into the prestate object.
-	lookupAccount: function(addr, db){
+	lookupAccount;: function(addr, db){
 		var acc = toHex(addr);
 		if (this.prestate[acc] === undefined) {
 			this.prestate[acc] = {
@@ -73,9 +73,9 @@
 			case "CREATE2":
 				var from = log.contract.getAddress();
 				// stack: salt, size, offset, endowment
-				var offset = log.stack.peek(1).valueOf()
-				var size = log.stack.peek(2).valueOf()
-				var end = offset + size
+				var offset = log.stack.peek(1).valueOf();
+				var size = log.stack.peek(2).valueOf();
+				var end = offset + size;
 				this.lookupAccount(toContract2(from, log.stack.peek(3).toString(16), log.memory.slice(offset, end)), db);
 				break;
 			case "CALL": case "CALLCODE": case "DELEGATECALL": case "STATICCALL":

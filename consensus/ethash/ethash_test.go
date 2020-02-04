@@ -33,13 +33,13 @@ func TestTestMode(t *testing.T) {
 		if err := ethash.VerifySeal(nil, header); err != nil {
 			t.Fatalf("unexpected verification error: %v", err)
 		}
-	case <-time.NewTimer(time.Second).C:
+	case <-time.NewTimer(2 * time.Second).C:
 		t.Error("sealing result timeout")
 	}
 }
 
 // This test checks that cache lru logic doesn't crash under load.
-// It reproduces https://github.com/ethereum/go-ethereum/issues/14943
+// It reproduces https://github.com/entropyio/go-entropy/issues/14943
 func TestCacheFileEvict(t *testing.T) {
 	tmpdir, err := ioutil.TempDir("", "ethash-test")
 	if err != nil {

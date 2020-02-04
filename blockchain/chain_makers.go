@@ -86,7 +86,7 @@ func (b *BlockGen) AddTxWithChain(bc *BlockChain, tx *model.Transaction) {
 		b.SetCoinbase(common.Address{})
 	}
 	b.statedb.Prepare(tx.Hash(), common.Hash{}, len(b.txs))
-	receipt, _, err := ApplyTransaction(b.config, bc, &b.header.Coinbase, b.gasPool, b.statedb, b.header, tx, &b.header.GasUsed, evm.Config{})
+	receipt, err := ApplyTransaction(b.config, bc, &b.header.Coinbase, b.gasPool, b.statedb, b.header, tx, &b.header.GasUsed, evm.Config{})
 	if err != nil {
 		panic(err)
 	}
@@ -263,8 +263,7 @@ func makeBlockChain(parent *model.Block, n int, engine consensus.Engine, db data
 }
 
 type fakeChainReader struct {
-	config  *config.ChainConfig
-	genesis *model.Block
+	config *config.ChainConfig
 }
 
 // Config returns the chain configuration.

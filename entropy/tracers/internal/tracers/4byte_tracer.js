@@ -13,7 +13,7 @@
 //   }
 {
 	// ids aggregates the 4byte ids found.
-	ids : {},
+	{},
 
 	// callType returns 'false' for non-calls, or the peek-index for the first param
 	// after 'value', i.e. meminstart.

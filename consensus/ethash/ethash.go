@@ -4,8 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/edsrzf/mmap-go"
-	"github.com/entropyio/go-entropy/blockchain/model"
-	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/mathutil"
 	"github.com/entropyio/go-entropy/consensus"
 	"github.com/entropyio/go-entropy/logger"
@@ -385,36 +383,8 @@ type Config struct {
 	DatasetsInMem  int
 	DatasetsOnDisk int
 	PowMode        Mode
-}
 
-// sealTask wraps a seal block with relative result channel for remote sealer thread.
-type sealTask struct {
-	block   *model.Block
-	results chan<- *model.Block
-}
-
-// mineResult wraps the pow solution parameters for the specified block.
-type mineResult struct {
-	nonce     model.BlockNonce
-	mixDigest common.Hash
-	hash      common.Hash
-
-	errc chan error
-}
-
-// hashrate wraps the hash rate submitted by the remote sealer.
-type hashrate struct {
-	id   common.Hash
-	ping time.Time
-	rate uint64
-
-	done chan struct{}
-}
-
-// sealWork wraps a seal work package for remote sealer.
-type sealWork struct {
-	errc chan error
-	res  chan [4]string
+	//Log log.Logger `toml:"-"`
 }
 
 // Ethash is a consensus engine based on proof-of-work implementing the ethash
@@ -430,22 +400,15 @@ type Ethash struct {
 	threads  int           // Number of threads to mine on if mining
 	update   chan struct{} // Notification channel to update mining parameters
 	hashrate metrics.Meter // Meter tracking the average hashrate
-
-	// Remote sealer related fields
-	workCh       chan *sealTask   // Notification channel to push new work and relative result channel to remote sealer
-	fetchWorkCh  chan *sealWork   // Channel used for remote sealer to fetch mining work
-	submitWorkCh chan *mineResult // Channel used for remote sealer to submit their mining result
-	fetchRateCh  chan chan uint64 // Channel used to gather submitted hash rate for local or remote sealer.
-	submitRateCh chan *hashrate   // Channel used for remote sealer to submit their mining hashrate
+	remote   *remoteSealer
 
 	// The fields below are hooks for testing
 	shared    *Ethash       // Shared PoW verifier to avoid cache regeneration
 	fakeFail  uint64        // Block number which fails PoW check even in fake mode
 	fakeDelay time.Duration // Time delay to sleep for before returning from verify
 
-	lock      sync.Mutex      // Ensures thread safety for the in-memory caches and mining fields
-	closeOnce sync.Once       // Ensures exit channel will not be closed twice.
-	exitCh    chan chan error // Notification channel to exiting backend threads
+	lock      sync.Mutex // Ensures thread safety for the in-memory caches and mining fields
+	closeOnce sync.Once  // Ensures exit channel will not be closed twice.
 }
 
 // New creates a full sized ethash PoW scheme and starts a background thread for
@@ -463,19 +426,13 @@ func New(config Config, notify []string, noverify bool) *Ethash {
 		log.Debugf("Disk storage enabled for ethash DAGs. dir=%s, count=%d", config.DatasetDir, config.DatasetsOnDisk)
 	}
 	ethash := &Ethash{
-		config:       config,
-		caches:       newlru("cache", config.CachesInMem, newCache),
-		datasets:     newlru("dataset", config.DatasetsInMem, newDataset),
-		update:       make(chan struct{}),
-		hashrate:     metrics.NewMeterForced(),
-		workCh:       make(chan *sealTask),
-		fetchWorkCh:  make(chan *sealWork),
-		submitWorkCh: make(chan *mineResult),
-		fetchRateCh:  make(chan chan uint64),
-		submitRateCh: make(chan *hashrate),
-		exitCh:       make(chan chan error),
+		config:   config,
+		caches:   newlru("cache", config.CachesInMem, newCache),
+		datasets: newlru("dataset", config.DatasetsInMem, newDataset),
+		update:   make(chan struct{}),
+		hashrate: metrics.NewMeterForced(),
 	}
-	go ethash.remote(notify, noverify)
+	ethash.remote = startRemoteSealer(ethash, notify, noverify)
 	return ethash
 }
 
@@ -483,19 +440,13 @@ func New(config Config, notify []string, noverify bool) *Ethash {
 // purposes.
 func NewTester(notify []string, noverify bool) *Ethash {
 	ethash := &Ethash{
-		config:       Config{PowMode: ModeTest},
-		caches:       newlru("cache", 1, newCache),
-		datasets:     newlru("dataset", 1, newDataset),
-		update:       make(chan struct{}),
-		hashrate:     metrics.NewMeterForced(),
-		workCh:       make(chan *sealTask),
-		fetchWorkCh:  make(chan *sealWork),
-		submitWorkCh: make(chan *mineResult),
-		fetchRateCh:  make(chan chan uint64),
-		submitRateCh: make(chan *hashrate),
-		exitCh:       make(chan chan error),
+		config:   Config{PowMode: ModeTest},
+		caches:   newlru("cache", 1, newCache),
+		datasets: newlru("dataset", 1, newDataset),
+		update:   make(chan struct{}),
+		hashrate: metrics.NewMeterForced(),
 	}
-	go ethash.remote(notify, noverify)
+	ethash.remote = startRemoteSealer(ethash, notify, noverify)
 	return ethash
 }
 
@@ -555,13 +506,11 @@ func (ethash *Ethash) Close() error {
 	var err error
 	ethash.closeOnce.Do(func() {
 		// Short circuit if the exit channel is not allocated.
-		if ethash.exitCh == nil {
+		if ethash.remote == nil {
 			return
 		}
-		errc := make(chan error)
-		ethash.exitCh <- errc
-		err = <-errc
-		close(ethash.exitCh)
+		close(ethash.remote.requestExit)
+		<-ethash.remote.exitCh
 	})
 	return err
 }
@@ -662,8 +611,8 @@ func (ethash *Ethash) Hashrate() float64 {
 	var res = make(chan uint64, 1)
 
 	select {
-	case ethash.fetchRateCh <- res:
-	case <-ethash.exitCh:
+	case ethash.remote.fetchRateCh <- res:
+	case <-ethash.remote.exitCh:
 		// Return local hashrate only if ethash is stopped.
 		return ethash.hashrate.Rate1()
 	}

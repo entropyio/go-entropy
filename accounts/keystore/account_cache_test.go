@@ -14,7 +14,6 @@ import (
 	"github.com/davecgh/go-spew/spew"
 
 	"github.com/cespare/cp"
-	"github.com/entropyio/go-entropy/accounts"
 	"github.com/entropyio/go-entropy/common"
 )
 

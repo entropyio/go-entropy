@@ -1,10 +1,10 @@
 {
     // hist is the map of opcodes to counters
-    hist: {},
+    {},
     // nops counts number of ops
-    nops: 0,
+    0,
     // step is invoked for every opcode that the VM executes.
-    step: function(log, db) {
+    step;: function(log, db) {
         var op = log.op.toString();
         if (this.hist[op]){
             this.hist[op]++;

@@ -10,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/entropyio/go-entropy/accounts"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/event"
 )

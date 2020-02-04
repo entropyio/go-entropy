@@ -35,7 +35,6 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
-	"flag"
 	"fmt"
 	"math/big"
 	"testing"

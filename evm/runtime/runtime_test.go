@@ -7,7 +7,6 @@ import (
 
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/database"
 	"github.com/entropyio/go-entropy/evm"
 )
 

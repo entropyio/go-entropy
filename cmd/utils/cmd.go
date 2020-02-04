@@ -2,7 +2,6 @@ package utils
 
 import (
 	"fmt"
-	"github.com/entropyio/go-entropy/dashboard"
 	"github.com/entropyio/go-entropy/entropy"
 	"github.com/entropyio/go-entropy/server/node"
 	"gopkg.in/urfave/cli.v1"
@@ -18,11 +17,6 @@ func MakeFullNode(ctx *cli.Context) *node.Node {
 
 	// add entropy service
 	RegisterEntropyService(stack, &cfg.Entropy)
-
-	// add dashboard servie
-	if ctx.GlobalBool(DashboardEnabledFlag.Name) {
-		RegisterDashboardService(stack, &cfg.Dashboard, GitCommit)
-	}
 
 	// Whisper must be explicitly enabled by specifying at least 1 whisper flag or in dev mode
 	//shhEnabled := enableWhisper(ctx)
@@ -59,8 +53,7 @@ func MakeConfigNode(ctx *cli.Context) (*node.Node, EntropyConfig) {
 	cfg := EntropyConfig{
 		Entropy: entropy.DefaultConfig,
 		//Shh:       whisper.DefaultConfig,
-		Node:      DefaultNodeConfig(),
-		Dashboard: dashboard.DefaultConfig,
+		Node: DefaultNodeConfig(),
 	}
 
 	// Load config file.
@@ -82,7 +75,6 @@ func MakeConfigNode(ctx *cli.Context) (*node.Node, EntropyConfig) {
 	}
 
 	//utils.SetShhConfig(ctx, stack, &cfg.Shh)
-	SetDashboardConfig(ctx, &cfg.Dashboard)
 
 	return stack, cfg
 }

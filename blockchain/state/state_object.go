@@ -279,7 +279,7 @@ func (state *stateObject) updateTrie(db StateDatabase) Trie {
 			continue
 		}
 		// Encoding []byte cannot fail, ok to ignore the error.
-		v, _ := rlputil.EncodeToBytes(bytes.TrimLeft(value[:], "\x00"))
+		v, _ := rlputil.EncodeToBytes(common.TrimLeftZeroes(value[:]))
 		state.setError(tr.TryUpdate(key[:], v))
 	}
 	if len(state.pendingStorage) > 0 {

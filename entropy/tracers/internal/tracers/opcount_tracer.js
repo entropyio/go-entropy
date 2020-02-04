@@ -2,10 +2,10 @@
 // executed by the EVM before the transaction terminated.
 {
 	// count tracks the number of EVM instructions executed.
-	count: 0,
+	0,
 
 	// step is invoked for every opcode that the VM executes.
-	step: function(log, db) { this.count++ },
+	step;: function(log, db) { this.count++ },
 
 	// fault is invoked when the actual execution of an opcode fails.
 	fault: function(log, db) { },

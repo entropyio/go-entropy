@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"github.com/entropyio/go-entropy/config"
-	"github.com/entropyio/go-entropy/dashboard"
 	"github.com/entropyio/go-entropy/entropy"
 	"github.com/entropyio/go-entropy/server/node"
 	"github.com/naoina/toml"
@@ -27,12 +26,6 @@ var (
 		DataDirFlag,
 		AncientFlag,
 		GCModeFlag,
-
-		// dashboard
-		DashboardEnabledFlag,
-		DashboardAddrFlag,
-		DashboardPortFlag,
-		DashboardRefreshFlag,
 	}
 
 	RpcFlags = []cli.Flag{
@@ -61,7 +54,6 @@ type EntropyConfig struct {
 	//Shh       whisper.Config
 	Node         node.Config
 	EntropyStats entropyStatsConfig
-	Dashboard    dashboard.Config
 }
 
 var (

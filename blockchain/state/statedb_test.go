@@ -440,7 +440,8 @@ func (test *snapshotTest) checkEqual(state, checkstate *StateDB) error {
 	return nil
 }
 
-func (s *StateSuite) TestTouchDelete(c *check.C) {
+func TestTouchDelete(t *testing.T) {
+	s := newStateTest()
 	s.state.GetOrNewStateObject(common.Address{})
 	root, _ := s.state.Commit(false)
 	s.state.Reset(root)
@@ -449,11 +450,11 @@ func (s *StateSuite) TestTouchDelete(c *check.C) {
 	s.state.AddBalance(common.Address{}, new(big.Int))
 
 	if len(s.state.journal.dirties) != 1 {
-		c.Fatal("expected one dirty state object")
+		t.Fatal("expected one dirty state object")
 	}
 	s.state.RevertToSnapshot(snapshot)
 	if len(s.state.journal.dirties) != 0 {
-		c.Fatal("expected no dirty state object")
+		t.Fatal("expected no dirty state object")
 	}
 }
 
@@ -475,7 +476,7 @@ func TestCopyOfCopy(t *testing.T) {
 // Tests a regression where committing a copy lost some internal meta information,
 // leading to corrupted subsequent copies.
 //
-// See https://github.com/ethereum/go-ethereum/issues/20106.
+// See https://github.com/entropyio/go-entropy/issues/20106.
 func TestCopyCommitCopy(t *testing.T) {
 	state, _ := New(common.Hash{}, NewDatabase(rawdb.NewMemoryDatabase()))
 
@@ -547,7 +548,7 @@ func TestCopyCommitCopy(t *testing.T) {
 // Tests a regression where committing a copy lost some internal meta information,
 // leading to corrupted subsequent copies.
 //
-// See https://github.com/ethereum/go-ethereum/issues/20106.
+// See https://github.com/entropyio/go-entropy/issues/20106.
 func TestCopyCopyCommitCopy(t *testing.T) {
 	state, _ := New(common.Hash{}, NewDatabase(rawdb.NewMemoryDatabase()))
 

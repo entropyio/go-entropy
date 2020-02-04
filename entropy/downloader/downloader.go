@@ -754,7 +754,7 @@ func (d *Downloader) findAncestor(p *peerConnection, remoteHeader *model.Header)
 			}
 			// Make sure the peer's reply conforms to the request
 			for i, header := range headers {
-				expectNumber := from + int64(i)*int64((skip+1))
+				expectNumber := from + int64(i)*int64(skip+1)
 				if number := header.Number.Int64(); number != expectNumber {
 					log.Debug("Head headers broke chain ordering", "index", i, "requested", expectNumber, "received", number)
 					return 0, errInvalidChain
@@ -981,7 +981,7 @@ func (d *Downloader) fetchHeaders(p *peerConnection, from uint64, pivot uint64) 
 				// chain errors.
 				if n := len(headers); n > 0 {
 					// Retrieve the current head we're at
-					head := uint64(0)
+					var head uint64
 					if d.mode == LightSync {
 						head = d.lightchain.CurrentHeader().Number.Uint64()
 					} else {

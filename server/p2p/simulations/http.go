@@ -18,9 +18,8 @@ import (
 	"github.com/entropyio/go-entropy/rpc"
 	"github.com/entropyio/go-entropy/server/p2p"
 	"github.com/entropyio/go-entropy/server/p2p/enode"
-	"github.com/entropyio/go-entropy/server/p2p/simulations/adapters"
+	"github.com/gorilla/websocket"
 	"github.com/julienschmidt/httprouter"
-	"golang.org/x/net/websocket"
 )
 
 // DefaultClient is the default simulation API client which expects the API
@@ -369,12 +368,6 @@ func (s *Server) StreamNetworkEvents(w http.ResponseWriter, req *http.Request) {
 	sub := s.network.events.Subscribe(events)
 	defer sub.Unsubscribe()
 
-	// stop the stream if the client goes away
-	var clientGone <-chan bool
-	if cn, ok := w.(http.CloseNotifier); ok {
-		clientGone = cn.CloseNotify()
-	}
-
 	// write writes the given event and data to the stream like:
 	//
 	// event: <event>
@@ -440,6 +433,7 @@ func (s *Server) StreamNetworkEvents(w http.ResponseWriter, req *http.Request) {
 		}
 	}
 
+	clientGone := req.Context().Done()
 	for {
 		select {
 		case event := <-events:
@@ -639,16 +633,20 @@ func (s *Server) Options(w http.ResponseWriter, req *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+var wsUpgrade = websocket.Upgrader{
+	CheckOrigin: func(*http.Request) bool { return true },
+}
+
 // NodeRPC forwards RPC requests to a node in the network via a WebSocket
 // connection
 func (s *Server) NodeRPC(w http.ResponseWriter, req *http.Request) {
-	node := req.Context().Value("node").(*Node)
-
-	handler := func(conn *websocket.Conn) {
-		node.ServeRPC(conn)
+	conn, err := wsUpgrade.Upgrade(w, req, nil)
+	if err != nil {
+		return
 	}
-
-	websocket.Server{Handler: handler}.ServeHTTP(w, req)
+	defer conn.Close()
+	node := req.Context().Value("node").(*Node)
+	node.ServeRPC(conn)
 }
 
 // ServeHTTP implements the http.Handler interface by delegating to the
@@ -691,7 +689,7 @@ func (s *Server) wrapHandler(handler http.HandlerFunc) httprouter.Handle {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
 
-		ctx := context.Background()
+		ctx := req.Context()
 
 		if id := params.ByName("nodeid"); id != "" {
 			var nodeID enode.ID

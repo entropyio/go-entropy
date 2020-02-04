@@ -18,7 +18,7 @@ func (s *Server) ServeListener(l net.Listener) error {
 			return err
 		}
 		log.Debugf("Accepted RPC connection", "conn", conn.RemoteAddr())
-		go s.ServeCodec(NewJSONCodec(conn), OptionMethodInvocation|OptionSubscriptions)
+		go s.ServeCodec(NewCodec(conn), 0)
 	}
 }
 
@@ -34,6 +34,6 @@ func DialIPC(ctx context.Context, endpoint string) (*Client, error) {
 		if err != nil {
 			return nil, err
 		}
-		return NewJSONCodec(conn), err
+		return NewCodec(conn), err
 	})
 }

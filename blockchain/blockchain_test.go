@@ -887,7 +887,7 @@ func TestChainTxReorgs(t *testing.T) {
 	}
 
 	// removed tx
-	for i, tx := range (model.Transactions{pastDrop, freshDrop}) {
+	for i, tx := range model.Transactions{pastDrop, freshDrop} {
 		if txn, _, _, _ := mapper.ReadTransaction(db, tx.Hash()); txn != nil {
 			t.Errorf("drop %d: tx %v found while shouldn't have been", i, txn)
 		}
@@ -896,7 +896,7 @@ func TestChainTxReorgs(t *testing.T) {
 		}
 	}
 	// added tx
-	for i, tx := range (model.Transactions{pastAdd, freshAdd, futureAdd}) {
+	for i, tx := range model.Transactions{pastAdd, freshAdd, futureAdd} {
 		if txn, _, _, _ := mapper.ReadTransaction(db, tx.Hash()); txn == nil {
 			t.Errorf("add %d: expected tx to be found", i)
 		}
@@ -905,7 +905,7 @@ func TestChainTxReorgs(t *testing.T) {
 		}
 	}
 	// shared tx
-	for i, tx := range (model.Transactions{postponed, swapped}) {
+	for i, tx := range model.Transactions{postponed, swapped} {
 		if txn, _, _, _ := mapper.ReadTransaction(db, tx.Hash()); txn == nil {
 			t.Errorf("share %d: expected tx to be found", i)
 		}
@@ -946,16 +946,21 @@ func TestLogReorgs(t *testing.T) {
 	}
 
 	chain, _ = GenerateChain(config.TestChainConfig, genesisObj, ethash.NewFaker(), db, 3, func(i int, gen *BlockGen) {})
+	done := make(chan struct{})
+	go func() {
+		ev := <-rmLogsCh
+		if len(ev.Logs) == 0 {
+			t.Error("expected logs")
+		}
+		close(done)
+	}()
 	if _, err := blockchain.InsertChain(chain); err != nil {
 		t.Fatalf("failed to insert forked chain: %v", err)
 	}
 
 	timeout := time.NewTimer(1 * time.Second)
 	select {
-	case ev := <-rmLogsCh:
-		if len(ev.Logs) == 0 {
-			t.Error("expected logs")
-		}
+	case <-done:
 	case <-timeout.C:
 		t.Fatal("Timeout. There is no RemovedLogsEvent has been sent.")
 	}
@@ -968,54 +973,62 @@ func TestLogRebirth(t *testing.T) {
 		db      = mapper.NewMemoryDatabase()
 
 		// this code generates a log
-		code       = common.Hex2Bytes("60606040525b7f24ec1d3ff24c2f6ff210738839dbc339cd45a5294d85c79361016243157aae7b60405180905060405180910390a15b600a8060416000396000f360606040526008565b00")
-		gspec      = &genesis.Genesis{Config: config.TestChainConfig, Alloc: genesis.GenesisAlloc{addr1: {Balance: big.NewInt(10000000000000)}}}
-		genesisObj = gspec.MustCommit(db)
-		signer     = model.NewEIP155Signer(gspec.Config.ChainID)
-		newLogCh   = make(chan bool)
+		code        = common.Hex2Bytes("60606040525b7f24ec1d3ff24c2f6ff210738839dbc339cd45a5294d85c79361016243157aae7b60405180905060405180910390a15b600a8060416000396000f360606040526008565b00")
+		gspec       = &genesis.Genesis{Config: config.TestChainConfig, Alloc: genesis.GenesisAlloc{addr1: {Balance: big.NewInt(10000000000000)}}}
+		genesisObj  = gspec.MustCommit(db)
+		signer      = model.NewEIP155Signer(gspec.Config.ChainID)
+		newLogCh    = make(chan bool)
+		removeLogCh = make(chan bool)
 	)
 
-	// listenNewLog checks whether the received logs number is equal with expected.
-	listenNewLog := func(sink chan []*model.Log, expect int) {
+	// validateLogEvent checks whether the received logs number is equal with expected.
+	validateLogEvent := func(sink interface{}, result chan bool, expect int) {
+		chanval := reflect.ValueOf(sink)
+		chantyp := chanval.Type()
+		if chantyp.Kind() != reflect.Chan || chantyp.ChanDir()&reflect.RecvDir == 0 {
+			t.Fatalf("invalid channel, given type %v", chantyp)
+		}
 		cnt := 0
+		var recv []reflect.Value
+		timeout := time.After(1 * time.Second)
+		cases := []reflect.SelectCase{{Chan: chanval, Dir: reflect.SelectRecv}, {Chan: reflect.ValueOf(timeout), Dir: reflect.SelectRecv}}
 		for {
-			select {
-			case logs := <-sink:
-				cnt += len(logs)
-			case <-time.NewTimer(5 * time.Second).C:
-				// new logs timeout
-				newLogCh <- false
+			chose, v, _ := reflect.Select(cases)
+			if chose == 1 {
+				// Not enough event received
+				result <- false
 				return
 			}
+			cnt += 1
+			recv = append(recv, v)
 			if cnt == expect {
 				break
-			} else if cnt > expect {
-				// redundant logs received
-				newLogCh <- false
-				return
 			}
 		}
-		select {
-		case <-sink:
-			// redundant logs received
-			newLogCh <- false
-		case <-time.NewTimer(100 * time.Millisecond).C:
-			newLogCh <- true
+		done := time.After(50 * time.Millisecond)
+		cases = cases[:1]
+		cases = append(cases, reflect.SelectCase{Chan: reflect.ValueOf(done), Dir: reflect.SelectRecv})
+		chose, _, _ := reflect.Select(cases)
+		// If chose equal 0, it means receiving redundant events.
+		if chose == 1 {
+			result <- true
+		} else {
+			result <- false
 		}
 	}
 
-	blockchain, _ := NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{}, nil)
+	blockchain, _ := NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), vm.Config{}, nil)
 	defer blockchain.Stop()
 
-	logsCh := make(chan []*model.Log)
+	logsCh := make(chan []*types.Log)
 	blockchain.SubscribeLogsEvent(logsCh)
 
 	rmLogsCh := make(chan RemovedLogsEvent)
 	blockchain.SubscribeRemovedLogsEvent(rmLogsCh)
 
-	chain, _ := GenerateChain(config.TestChainConfig, genesisObj, ethash.NewFaker(), db, 2, func(i int, gen *BlockGen) {
+	chain, _ := GenerateChain(params.TestChainConfig, genesis, ethash.NewFaker(), db, 2, func(i int, gen *BlockGen) {
 		if i == 1 {
-			tx, err := model.SignTx(model.NewContractCreation(gen.TxNonce(addr1), new(big.Int), 1000000, new(big.Int), code), signer, key1)
+			tx, err := types.SignTx(types.NewContractCreation(gen.TxNonce(addr1), new(big.Int), 1000000, new(big.Int), code), signer, key1)
 			if err != nil {
 				t.Fatalf("failed to create tx: %v", err)
 			}
@@ -1024,18 +1037,18 @@ func TestLogRebirth(t *testing.T) {
 	})
 
 	// Spawn a goroutine to receive log events
-	go listenNewLog(logsCh, 1)
+	go validateLogEvent(logsCh, newLogCh, 1)
 	if _, err := blockchain.InsertChain(chain); err != nil {
 		t.Fatalf("failed to insert chain: %v", err)
 	}
 	if !<-newLogCh {
-		t.Fatalf("failed to receive new log event")
+		t.Fatal("failed to receive new log event")
 	}
 
 	// Generate long reorg chain
-	forkChain, _ := GenerateChain(config.TestChainConfig, genesisObj, ethash.NewFaker(), db, 2, func(i int, gen *BlockGen) {
+	forkChain, _ := GenerateChain(params.TestChainConfig, genesis, ethash.NewFaker(), db, 2, func(i int, gen *BlockGen) {
 		if i == 1 {
-			tx, err := model.SignTx(model.NewContractCreation(gen.TxNonce(addr1), new(big.Int), 1000000, new(big.Int), code), signer, key1)
+			tx, err := types.SignTx(types.NewContractCreation(gen.TxNonce(addr1), new(big.Int), 1000000, new(big.Int), code), signer, key1)
 			if err != nil {
 				t.Fatalf("failed to create tx: %v", err)
 			}
@@ -1046,40 +1059,31 @@ func TestLogRebirth(t *testing.T) {
 	})
 
 	// Spawn a goroutine to receive log events
-	go listenNewLog(logsCh, 1)
+	go validateLogEvent(logsCh, newLogCh, 1)
+	go validateLogEvent(rmLogsCh, removeLogCh, 1)
 	if _, err := blockchain.InsertChain(forkChain); err != nil {
 		t.Fatalf("failed to insert forked chain: %v", err)
 	}
 	if !<-newLogCh {
-		t.Fatalf("failed to receive new log event")
+		t.Fatal("failed to receive new log event")
 	}
-	// Ensure removedLog events received
-	select {
-	case ev := <-rmLogsCh:
-		if len(ev.Logs) == 0 {
-			t.Error("expected logs")
-		}
-	case <-time.NewTimer(1 * time.Second).C:
-		t.Fatal("Timeout. There is no RemovedLogsEvent has been sent.")
+	if !<-removeLogCh {
+		t.Fatal("failed to receive removed log event")
 	}
 
-	newBlocks, _ := GenerateChain(config.TestChainConfig, chain[len(chain)-1], ethash.NewFaker(), db, 1, func(i int, gen *BlockGen) {})
-	go listenNewLog(logsCh, 1)
+	newBlocks, _ := GenerateChain(params.TestChainConfig, chain[len(chain)-1], ethash.NewFaker(), db, 1, func(i int, gen *BlockGen) {})
+	go validateLogEvent(logsCh, newLogCh, 1)
+	go validateLogEvent(rmLogsCh, removeLogCh, 1)
 	if _, err := blockchain.InsertChain(newBlocks); err != nil {
 		t.Fatalf("failed to insert forked chain: %v", err)
 	}
-	// Ensure removedLog events received
-	select {
-	case ev := <-rmLogsCh:
-		if len(ev.Logs) == 0 {
-			t.Error("expected logs")
-		}
-	case <-time.NewTimer(1 * time.Second).C:
-		t.Fatal("Timeout. There is no RemovedLogsEvent has been sent.")
-	}
 	// Rebirth logs should omit a newLogEvent
 	if !<-newLogCh {
-		t.Fatalf("failed to receive new log event")
+		t.Fatal("failed to receive new log event")
+	}
+	// Ensure removedLog events received
+	if !<-removeLogCh {
+		t.Fatal("failed to receive removed log event")
 	}
 }
 
@@ -1087,13 +1091,13 @@ func TestSideLogRebirth(t *testing.T) {
 	var (
 		key1, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
 		addr1   = crypto.PubkeyToAddress(key1.PublicKey)
-		db      = mapper.NewMemoryDatabase()
+		db      = rawdb.NewMemoryDatabase()
 
 		// this code generates a log
 		code     = common.Hex2Bytes("60606040525b7f24ec1d3ff24c2f6ff210738839dbc339cd45a5294d85c79361016243157aae7b60405180905060405180910390a15b600a8060416000396000f360606040526008565b00")
-		gspec    = &genesis.Genesis{Config: config.TestChainConfig, Alloc: genesis.GenesisAlloc{addr1: {Balance: big.NewInt(10000000000000)}}}
+		gspec    = &Genesis{Config: params.TestChainConfig, Alloc: GenesisAlloc{addr1: {Balance: big.NewInt(10000000000000)}}}
 		genesis  = gspec.MustCommit(db)
-		signer   = model.NewEIP155Signer(gspec.Config.ChainID)
+		signer   = types.NewEIP155Signer(gspec.Config.ChainID)
 		newLogCh = make(chan bool)
 	)
 
@@ -1131,8 +1135,7 @@ func TestSideLogRebirth(t *testing.T) {
 
 	logsCh := make(chan []*model.Log)
 	blockchain.SubscribeLogsEvent(logsCh)
-
-	chain, _ := GenerateChain(config.TestChainConfig, genesis, ethash.NewFaker(), db, 2, func(i int, gen *BlockGen) {
+	chain, _ := GenerateChain(params.TestChainConfig, genesis, ethash.NewFaker(), db, 2, func(i int, gen *BlockGen) {
 		if i == 1 {
 			// Higher block difficulty
 			gen.OffsetTime(-9)
@@ -1729,8 +1732,8 @@ func TestIncompleteAncientReceiptChainInsertion(t *testing.T) {
 // overtake the 'canon' chain until after it's passed canon by about 200 blocks.
 //
 // Details at:
-//  - https://github.com/ethereum/go-ethereum/issues/18977
-//  - https://github.com/ethereum/go-ethereum/pull/18988
+//  - https://github.com/entropyio/go-entropy/issues/18977
+//  - https://github.com/entropyio/go-entropy/pull/18988
 func TestLowDiffLongChain(t *testing.T) {
 	// Generate a canonical chain to act as the main dataset
 	engine := ethash.NewFaker()
@@ -2174,7 +2177,7 @@ func benchmarkLargeNumberOfValueToNonexisting(b *testing.B, numTxs, numBlocks in
 		}
 		b.StopTimer()
 		if got := chain.CurrentBlock().Transactions().Len(); got != numTxs*numBlocks {
-			b.Fatalf("Transactions were not included, expected %d, got %d", (numTxs * numBlocks), got)
+			b.Fatalf("Transactions were not included, expected %d, got %d", numTxs * numBlocks, got)
 
 		}
 	}

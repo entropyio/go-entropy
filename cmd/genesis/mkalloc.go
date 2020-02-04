@@ -16,8 +16,8 @@ import (
 	"sort"
 	"strconv"
 
-	"github.com/entropyio/go-entropy/common/rlputil"
 	"github.com/entropyio/go-entropy/blockchain/genesis"
+	"github.com/entropyio/go-entropy/common/rlputil"
 )
 
 type allocItem struct{ Addr, Balance *big.Int }
