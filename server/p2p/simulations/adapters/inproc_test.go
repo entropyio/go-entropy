@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/entropyio/go-entropy/server/p2p/simulations/pipes"
 	"sync"
 	"testing"
 )

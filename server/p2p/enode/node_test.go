@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"github.com/entropyio/go-entropy/server/p2p/enr"
 	"github.com/stretchr/testify/assert"
 	"math/big"
@@ -18,7 +18,7 @@ var pyRecord, _ = hex.DecodeString("f884b8407098ad865b00a582051940cb9cf368365724
 // implementation.
 func TestPythonInterop(t *testing.T) {
 	var r enr.Record
-	if err := rlputil.DecodeBytes(pyRecord, &r); err != nil {
+	if err := rlp.DecodeBytes(pyRecord, &r); err != nil {
 		t.Fatalf("can't decode: %v", err)
 	}
 	n, err := New(ValidSchemes, &r)

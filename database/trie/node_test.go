@@ -2,9 +2,8 @@ package trie
 
 import (
 	"bytes"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"testing"
-
-	"github.com/entropyio/go-entropy/common/rlputil"
 )
 
 func newTestFullNode(v []byte) []interface{} {
@@ -28,7 +27,7 @@ func TestDecodeNestedNode(t *testing.T) {
 	fullNodeData[15] = data
 
 	buf := bytes.NewBuffer([]byte{})
-	rlputil.Encode(buf, fullNodeData)
+	rlp.Encode(buf, fullNodeData)
 
 	if _, err := decodeNode([]byte("testdecode"), buf.Bytes()); err != nil {
 		t.Fatalf("decode nested full node err: %v", err)
@@ -39,7 +38,7 @@ func TestDecodeFullNodeWrongSizeChild(t *testing.T) {
 	fullNodeData := newTestFullNode([]byte("wrongsizechild"))
 	fullNodeData[0] = []byte("00")
 	buf := bytes.NewBuffer([]byte{})
-	rlputil.Encode(buf, fullNodeData)
+	rlp.Encode(buf, fullNodeData)
 
 	_, err := decodeNode([]byte("testdecode"), buf.Bytes())
 	if _, ok := err.(*decodeError); !ok {
@@ -58,7 +57,7 @@ func TestDecodeFullNodeWrongNestedFullNode(t *testing.T) {
 	fullNodeData[15] = data
 
 	buf := bytes.NewBuffer([]byte{})
-	rlputil.Encode(buf, fullNodeData)
+	rlp.Encode(buf, fullNodeData)
 
 	_, err := decodeNode([]byte("testdecode"), buf.Bytes())
 	if _, ok := err.(*decodeError); !ok {
@@ -69,7 +68,7 @@ func TestDecodeFullNodeWrongNestedFullNode(t *testing.T) {
 func TestDecodeFullNode(t *testing.T) {
 	fullNodeData := newTestFullNode([]byte("decodefullnode"))
 	buf := bytes.NewBuffer([]byte{})
-	rlputil.Encode(buf, fullNodeData)
+	rlp.Encode(buf, fullNodeData)
 
 	_, err := decodeNode([]byte("testdecode"), buf.Bytes())
 	if err != nil {

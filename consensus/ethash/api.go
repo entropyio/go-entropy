@@ -12,7 +12,7 @@ var errEthashStopped = errors.New("ethash stopped")
 
 // API exposes ethash related methods for the RPC interface.
 type API struct {
-	ethash *Ethash // Make sure the mode of ethash is normal.
+	ethash *Ethash
 }
 
 // GetWork returns a work package for external miner.
@@ -31,13 +31,11 @@ func (api *API) GetWork() ([4]string, error) {
 		workCh = make(chan [4]string, 1)
 		errc   = make(chan error, 1)
 	)
-
 	select {
 	case api.ethash.remote.fetchWorkCh <- &sealWork{errc: errc, res: workCh}:
 	case <-api.ethash.remote.exitCh:
 		return [4]string{}, errEthashStopped
 	}
-
 	select {
 	case work := <-workCh:
 		return work, nil
@@ -55,7 +53,6 @@ func (api *API) SubmitWork(nonce model.BlockNonce, hash, digest common.Hash) boo
 	}
 
 	var errc = make(chan error, 1)
-
 	select {
 	case api.ethash.remote.submitWorkCh <- &mineResult{
 		nonce:     nonce,
@@ -66,7 +63,6 @@ func (api *API) SubmitWork(nonce model.BlockNonce, hash, digest common.Hash) boo
 	case <-api.ethash.remote.exitCh:
 		return false
 	}
-
 	err := <-errc
 	return err == nil
 }
@@ -77,13 +73,12 @@ func (api *API) SubmitWork(nonce model.BlockNonce, hash, digest common.Hash) boo
 //
 // It accepts the miner hash rate and an identifier which must be unique
 // between nodes.
-func (api *API) SubmitHashRate(rate hexutil.Uint64, id common.Hash) bool {
+func (api *API) SubmitHashrate(rate hexutil.Uint64, id common.Hash) bool {
 	if api.ethash.remote == nil {
 		return false
 	}
 
 	var done = make(chan struct{}, 1)
-
 	select {
 	case api.ethash.remote.submitRateCh <- &hashrate{done: done, rate: uint64(rate), id: id}:
 	case <-api.ethash.remote.exitCh:
@@ -92,7 +87,6 @@ func (api *API) SubmitHashRate(rate hexutil.Uint64, id common.Hash) bool {
 
 	// Block until hash rate submitted successfully.
 	<-done
-
 	return true
 }
 

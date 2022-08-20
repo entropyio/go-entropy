@@ -2,11 +2,10 @@ package blockchain
 
 import (
 	"fmt"
-	"github.com/entropyio/go-entropy/blockchain/genesis"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus/ethash"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/evm"
 	"math/big"
 	"testing"
@@ -14,7 +13,7 @@ import (
 
 func printBlockChain(bc *BlockChain) {
 	for i := bc.CurrentBlock().Number().Uint64(); i > 0; i-- {
-		b := bc.GetBlockByNumber(uint64(i))
+		b := bc.GetBlockByNumber(i)
 		fmt.Printf("\n blockChain: hash=%x difficulty=%v\n", b.Hash(), b.Difficulty())
 	}
 }
@@ -50,9 +49,9 @@ func TestMyBlockChain(t *testing.T) {
 		t.Fatalf("failed to insert difficult chain: %v", err)
 	}
 
-	//if blocks[len(blocks)-1].Hash() != mapper.ReadHeadBlockHash(blockchain.db) {
-	//	t.Fatalf("Write/Get HeadBlockHash failed")
-	//}
+	if blocks[len(blocks)-1].Hash() != rawdb.ReadHeadBlockHash(blockchain.db) {
+		t.Fatalf("Write/Get HeadBlockHash failed")
+	}
 
 	printBlockChain(blockchain)
 }
@@ -67,26 +66,26 @@ func TestCreateChainInDB(t *testing.T) {
 		addr2      = crypto.PubkeyToAddress(key2.PublicKey)
 		addr3      = crypto.PubkeyToAddress(key3.PublicKey)
 		coinbase   = crypto.PubkeyToAddress(baseKey.PublicKey)
-		db, _      = mapper.NewLevelDBDatabase("/Users/wangzhen/Desktop/blockchain/test_entropy", 0, 0, "test")
+		db, _      = rawdb.NewLevelDBDatabase("./test_entropy", 0, 0, "test", false)
 	)
 
 	// Ensure that key1 has some funds in the genesis block.
-	gspec := &genesis.Genesis{
+	gspec := &Genesis{
 		Coinbase: coinbase,
 		Config:   config.TestChainConfig,
-		Alloc: genesis.GenesisAlloc{
+		Alloc: GenesisAlloc{
 			addr1: {Code: []byte("addr1"), Balance: big.NewInt(1000000)},
 			addr2: {Code: []byte("addr2"), Balance: big.NewInt(2000000)},
 			addr3: {Code: []byte("addr3"), Balance: big.NewInt(3000000)},
 		},
 	}
-	genesisObj := gspec.MustCommit(db)
+	genesis := gspec.MustCommit(db)
 
 	// 添加一个block
 	// Insert an easy and a difficult chain afterwards
 	//signer := model.HomesteadSigner{}
 
-	chain, _ := GenerateChain(config.TestChainConfig, genesisObj, ethash.NewFaker(), db, 2, func(i int, gen *BlockGen) {
+	chain, _ := GenerateChain(config.TestChainConfig, genesis, ethash.NewFaker(), db, 2, func(i int, gen *BlockGen) {
 		switch i {
 		case 0:
 			fmt.Println("in block 1 callback... add 1 transaction")
@@ -102,7 +101,7 @@ func TestCreateChainInDB(t *testing.T) {
 	})
 
 	// Import the chain. This runs all block validation rules.
-	blockchain, _ := NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{}, nil)
+	blockchain, _ := NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{}, nil, nil)
 	defer blockchain.Stop()
 
 	if i, err := blockchain.InsertChain(chain); err != nil {
@@ -128,10 +127,10 @@ func TestLoadChainFromDB(t *testing.T) {
 		addr2      = crypto.PubkeyToAddress(key2.PublicKey)
 		addr3      = crypto.PubkeyToAddress(key3.PublicKey)
 		coinbase   = crypto.PubkeyToAddress(baseKey.PublicKey)
-		db, _      = mapper.NewLevelDBDatabase("/Users/wangzhen/Desktop/blockchain/test_entropy", 0, 0, "test")
+		db, _      = rawdb.NewLevelDBDatabase("./test_entropy", 0, 0, "test", false)
 	)
 
-	blockchain, _ := NewBlockChain(db, nil, config.TestChainConfig, ethash.NewFaker(), evm.Config{}, nil)
+	blockchain, _ := NewBlockChain(db, nil, config.TestChainConfig, ethash.NewFaker(), evm.Config{}, nil, nil)
 	defer blockchain.Stop()
 
 	state, _ := blockchain.State()

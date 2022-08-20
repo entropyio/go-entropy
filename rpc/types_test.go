@@ -2,9 +2,10 @@ package rpc
 
 import (
 	"encoding/json"
-	"testing"
-
+	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/mathutil"
+	"reflect"
+	"testing"
 )
 
 func TestBlockNumberJSONUnmarshal(t *testing.T) {
@@ -62,7 +63,7 @@ func TestBlockNumberOrHash_UnmarshalJSON(t *testing.T) {
 		4:  {`"0x01"`, true, BlockNumberOrHash{}},
 		5:  {`"0x1"`, false, BlockNumberOrHashWithNumber(1)},
 		6:  {`"0x12"`, false, BlockNumberOrHashWithNumber(18)},
-		7:  {`"0x7fffffffffffffff"`, false, BlockNumberOrHashWithNumber(math.MaxInt64)},
+		7:  {`"0x7fffffffffffffff"`, false, BlockNumberOrHashWithNumber(mathutil.MaxInt64)},
 		8:  {`"0x8000000000000000"`, true, BlockNumberOrHash{}},
 		9:  {"0", true, BlockNumberOrHash{}},
 		10: {`"ff"`, true, BlockNumberOrHash{}},
@@ -103,5 +104,35 @@ func TestBlockNumberOrHash_UnmarshalJSON(t *testing.T) {
 			num != expectedNum || numOk != expectedNumOk {
 			t.Errorf("Test %d got unexpected value, want %v, got %v", i, test.expected, bnh)
 		}
+	}
+}
+
+func TestBlockNumberOrHash_WithNumber_MarshalAndUnmarshal(t *testing.T) {
+	tests := []struct {
+		name   string
+		number int64
+	}{
+		{"max", mathutil.MaxInt64},
+		{"pending", int64(PendingBlockNumber)},
+		{"latest", int64(LatestBlockNumber)},
+		{"earliest", int64(EarliestBlockNumber)},
+	}
+	for _, test := range tests {
+		test := test
+		t.Run(test.name, func(t *testing.T) {
+			bnh := BlockNumberOrHashWithNumber(BlockNumber(test.number))
+			marshalled, err := json.Marshal(bnh)
+			if err != nil {
+				t.Fatal("cannot marshal:", err)
+			}
+			var unmarshalled BlockNumberOrHash
+			err = json.Unmarshal(marshalled, &unmarshalled)
+			if err != nil {
+				t.Fatal("cannot unmarshal:", err)
+			}
+			if !reflect.DeepEqual(bnh, unmarshalled) {
+				t.Fatalf("wrong result: expected %v, got %v", bnh, unmarshalled)
+			}
+		})
 	}
 }

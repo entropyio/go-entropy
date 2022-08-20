@@ -2,10 +2,9 @@ package simulations
 
 import (
 	"context"
-	"time"
-
 	"github.com/entropyio/go-entropy/logger"
 	"github.com/entropyio/go-entropy/server/p2p/enode"
+	"time"
 )
 
 var log = logger.NewLogger("[Simulation]")

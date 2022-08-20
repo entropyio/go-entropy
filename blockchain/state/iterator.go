@@ -3,9 +3,9 @@ package state
 import (
 	"bytes"
 	"fmt"
-
+	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"github.com/entropyio/go-entropy/database/trie"
 )
 
@@ -88,8 +88,8 @@ func (it *NodeIterator) step() error {
 		return nil
 	}
 	// Otherwise we've reached an account node, initiate data iteration
-	var account Account
-	if err := rlputil.Decode(bytes.NewReader(it.stateIt.LeafBlob()), &account); err != nil {
+	var account model.StateAccount
+	if err := rlp.Decode(bytes.NewReader(it.stateIt.LeafBlob()), &account); err != nil {
 		return err
 	}
 	dataTrie, err := it.state.db.OpenStorageTrie(common.BytesToHash(it.stateIt.LeafKey()), account.Root)

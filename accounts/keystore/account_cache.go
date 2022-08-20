@@ -4,16 +4,15 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"github.com/deckarep/golang-set"
+	"github.com/entropyio/go-entropy/accounts"
+	"github.com/entropyio/go-entropy/common"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/deckarep/golang-set"
-	"github.com/entropyio/go-entropy/accounts"
-	"github.com/entropyio/go-entropy/common"
 )
 
 // Minimum amount of time between cache reloads. This limit applies if the platform does
@@ -45,7 +44,7 @@ func (err *AmbiguousAddrError) Error() string {
 	return fmt.Sprintf("multiple keys match address (%s)", files)
 }
 
-// accountCache is a live index of all account in the keystore.
+// accountCache is a live index of all accounts in the keystore.
 type accountCache struct {
 	keydir   string
 	watcher  *watcher
@@ -112,7 +111,7 @@ func (ac *accountCache) delete(removed accounts.Account) {
 	}
 }
 
-// deleteByFile removes an accounts referenced by the given path.
+// deleteByFile removes an account referenced by the given path.
 func (ac *accountCache) deleteByFile(path string) {
 	ac.mu.Lock()
 	defer ac.mu.Unlock()

@@ -1,7 +1,7 @@
 package prque
 
 import (
-	"github.com/entropyio/go-entropy/common/timeutil"
+	"github.com/entropyio/go-entropy/common/mclock"
 	"math/rand"
 	"sync"
 	"testing"
@@ -19,15 +19,15 @@ const (
 
 type lazyItem struct {
 	p, maxp int64
-	last    timeutil.AbsTime
+	last    mclock.AbsTime
 	index   int
 }
 
-func testPriority(a interface{}, now timeutil.AbsTime) int64 {
+func testPriority(a interface{}) int64 {
 	return a.(*lazyItem).p
 }
 
-func testMaxPriority(a interface{}, until timeutil.AbsTime) int64 {
+func testMaxPriority(a interface{}, until mclock.AbsTime) int64 {
 	i := a.(*lazyItem)
 	dt := until - i.last
 	i.maxp = i.p + int64(float64(dt)*testAvgRate)
@@ -40,7 +40,7 @@ func testSetIndex(a interface{}, i int) {
 
 func TestLazyQueue(t *testing.T) {
 	rand.Seed(time.Now().UnixNano())
-	clock := &timeutil.Simulated{}
+	clock := &mclock.Simulated{}
 	q := NewLazyQueue(testSetIndex, testPriority, testMaxPriority, clock, testQueueRefresh)
 
 	var (
@@ -57,17 +57,22 @@ func TestLazyQueue(t *testing.T) {
 		q.Push(&items[i])
 	}
 
-	var lock sync.Mutex
-	stopCh := make(chan chan struct{})
+	var (
+		lock   sync.Mutex
+		wg     sync.WaitGroup
+		stopCh = make(chan chan struct{})
+	)
+	defer wg.Wait()
+	wg.Add(1)
 	go func() {
+		defer wg.Done()
 		for {
 			select {
 			case <-clock.After(testQueueRefresh):
 				lock.Lock()
 				q.Refresh()
 				lock.Unlock()
-			case stop := <-stopCh:
-				close(stop)
+			case <-stopCh:
 				return
 			}
 		}
@@ -87,6 +92,8 @@ func TestLazyQueue(t *testing.T) {
 		if rand.Intn(100) == 0 {
 			p := q.PopItem().(*lazyItem)
 			if p.p != maxPri {
+				lock.Unlock()
+				close(stopCh)
 				t.Fatalf("incorrect item (best known priority %d, popped %d)", maxPri, p.p)
 			}
 			q.Push(p)
@@ -96,7 +103,5 @@ func TestLazyQueue(t *testing.T) {
 		clock.WaitForTimers(1)
 	}
 
-	stop := make(chan struct{})
-	stopCh <- stop
-	<-stop
+	close(stopCh)
 }

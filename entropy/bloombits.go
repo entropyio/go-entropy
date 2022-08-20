@@ -1,16 +1,9 @@
 package entropy
 
 import (
-	"time"
-
-	"context"
-	"github.com/entropyio/go-entropy/blockchain"
-	"github.com/entropyio/go-entropy/blockchain/bloombits"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
-	"github.com/entropyio/go-entropy/blockchain/model"
-	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/bitutil"
-	"github.com/entropyio/go-entropy/database"
+	"github.com/entropyio/go-entropy/database/rawdb"
+	"time"
 )
 
 const (
@@ -38,15 +31,15 @@ func (s *Entropy) startBloomHandlers(sectionSize uint64) {
 		go func() {
 			for {
 				select {
-				case <-s.shutdownChan:
+				case <-s.closeBloomHandler:
 					return
 
 				case request := <-s.bloomRequests:
 					task := <-request
 					task.Bitsets = make([][]byte, len(task.Sections))
 					for i, section := range task.Sections {
-						head := mapper.ReadCanonicalHash(s.chainDb, (section+1)*sectionSize-1)
-						if compVector, err := mapper.ReadBloomBits(s.chainDb, task.Bit, section, head); err == nil {
+						head := rawdb.ReadCanonicalHash(s.chainDb, (section+1)*sectionSize-1)
+						if compVector, err := rawdb.ReadBloomBits(s.chainDb, task.Bit, section, head); err == nil {
 							if blob, err := bitutil.DecompressBytes(compVector, int(sectionSize/8)); err == nil {
 								task.Bitsets[i] = blob
 							} else {
@@ -61,65 +54,4 @@ func (s *Entropy) startBloomHandlers(sectionSize uint64) {
 			}
 		}()
 	}
-}
-
-const (
-	// bloomThrottling is the time to wait between processing two consecutive index
-	// sections. It's useful during chain upgrades to prevent disk overload.
-	bloomThrottling = 100 * time.Millisecond
-)
-
-// BloomIndexer implements a blockchain.ChainIndexer, building up a rotated bloom bits index
-// for the Entropy header bloom filters, permitting blazing fast filtering.
-type BloomIndexer struct {
-	size uint64 // section size to generate bloombits for
-
-	db  database.Database    // database instance to write index data and metadata into
-	gen *bloombits.Generator // generator to rotate the bloom bits crating the bloom index
-
-	section uint64      // Section is the section number being processed currently
-	head    common.Hash // Head is the hash of the last header processed
-}
-
-// NewBloomIndexer returns a chain indexer that generates bloom bits data for the
-// canonical chain for fast logs filtering.
-func NewBloomIndexer(db database.Database, size, confirms uint64) *blockchain.ChainIndexer {
-	backend := &BloomIndexer{
-		db:   db,
-		size: size,
-	}
-	table := mapper.NewTable(db, string(mapper.BloomBitsIndexPrefix))
-
-	return blockchain.NewChainIndexer(db, table, backend, size, confirms, bloomThrottling, "bloombits")
-}
-
-// Reset implements blockchain.ChainIndexerBackend, starting a new bloombits index
-// section.
-func (b *BloomIndexer) Reset(ctx context.Context, section uint64, lastSectionHead common.Hash) error {
-	gen, err := bloombits.NewGenerator(uint(b.size))
-	b.gen, b.section, b.head = gen, section, common.Hash{}
-	return err
-}
-
-// Process implements blockchain.ChainIndexerBackend, adding a new header's bloom into
-// the index.
-func (b *BloomIndexer) Process(ctx context.Context, header *model.Header) error {
-	b.gen.AddBloom(uint(header.Number.Uint64()-b.section*b.size), header.Bloom)
-	b.head = header.Hash()
-	return nil
-}
-
-// Commit implements blockchain.ChainIndexerBackend, finalizing the bloom section and
-// writing it out into the database.
-func (b *BloomIndexer) Commit() error {
-	batch := b.db.NewBatch()
-
-	for i := 0; i < model.BloomBitLength; i++ {
-		bits, err := b.gen.Bitset(uint(i))
-		if err != nil {
-			return err
-		}
-		mapper.WriteBloomBits(batch, uint(i), b.section, b.head, bitutil.CompressBytes(bits))
-	}
-	return batch.Write()
 }

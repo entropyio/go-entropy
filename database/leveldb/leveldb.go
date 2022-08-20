@@ -1,3 +1,4 @@
+//go:build !js
 // +build !js
 
 // Package leveldb implements the key-value database layer based on LevelDB.
@@ -22,7 +23,7 @@ import (
 	"time"
 )
 
-var log = logger.NewLogger("levelDB")
+var log = logger.NewLogger("[levelDB]")
 
 const (
 	// degradationWarnInterval specifies how often warning should be printed if the
@@ -70,25 +71,39 @@ type Database struct {
 
 // New returns a wrapped LevelDB object. The namespace is the prefix that the
 // metrics reporting should use for surfacing internal stats.
-func New(file string, cache int, handles int, namespace string) (*Database, error) {
-	// Ensure we have some minimal caching and file guarantees
-	if cache < minCache {
-		cache = minCache
+func New(file string, cache int, handles int, namespace string, readonly bool) (*Database, error) {
+	return NewCustom(file, namespace, func(options *opt.Options) {
+		// Ensure we have some minimal caching and file guarantees
+		if cache < minCache {
+			cache = minCache
+		}
+		if handles < minHandles {
+			handles = minHandles
+		}
+		// Set default options
+		options.OpenFilesCacheCapacity = handles
+		options.BlockCacheCapacity = cache / 2 * opt.MiB
+		options.WriteBuffer = cache / 4 * opt.MiB // Two of these are used internally
+		if readonly {
+			options.ReadOnly = true
+		}
+	})
+}
+
+// NewCustom returns a wrapped LevelDB object. The namespace is the prefix that the
+// metrics reporting should use for surfacing internal stats.
+// The customize function allows the caller to modify the leveldb options.
+func NewCustom(file string, namespace string, customize func(options *opt.Options)) (*Database, error) {
+	options := configureOptions(customize)
+	usedCache := options.GetBlockCacheCapacity() + options.GetWriteBuffer()*2
+	logCtx := []interface{}{"cache", common.StorageSize(usedCache), "handles", options.GetOpenFilesCacheCapacity()}
+	if options.ReadOnly {
+		logCtx = append(logCtx, "readonly", "true")
 	}
-	if handles < minHandles {
-		handles = minHandles
-	}
-	logger := log
-	logger.Info("Allocated cache and file handles", "cache", common.StorageSize(cache*1024*1024), "handles", handles)
+	log.Infof("Allocated cache and file handles: %+v", logCtx...)
 
 	// Open the db and recover any potential corruptions
-	db, err := leveldb.OpenFile(file, &opt.Options{
-		OpenFilesCacheCapacity: handles,
-		BlockCacheCapacity:     cache / 2 * opt.MiB,
-		WriteBuffer:            cache / 4 * opt.MiB, // Two of these are used internally
-		Filter:                 filter.NewBloomFilter(10),
-		DisableSeeksCompaction: true,
-	})
+	db, err := leveldb.OpenFile(file, options)
 	if _, corrupted := err.(*errors.ErrCorrupted); corrupted {
 		db, err = leveldb.RecoverFile(file, nil)
 	}
@@ -99,7 +114,7 @@ func New(file string, cache int, handles int, namespace string) (*Database, erro
 	ldb := &Database{
 		fn:       file,
 		db:       db,
-		log:      logger,
+		log:      log,
 		quitChan: make(chan chan error),
 	}
 	ldb.compTimeMeter = metrics.NewRegisteredMeter(namespace+"compact/time", nil)
@@ -120,6 +135,20 @@ func New(file string, cache int, handles int, namespace string) (*Database, erro
 	return ldb, nil
 }
 
+// configureOptions sets some default options, then runs the provided setter.
+func configureOptions(customizeFn func(*opt.Options)) *opt.Options {
+	// Set default options
+	options := &opt.Options{
+		Filter:                 filter.NewBloomFilter(10),
+		DisableSeeksCompaction: true,
+	}
+	// Allow caller to make custom modifications to the options
+	if customizeFn != nil {
+		customizeFn(options)
+	}
+	return options
+}
+
 // Close stops the metrics collection, flushes any pending data to disk and closes
 // all io accesses to the underlying key-value store.
 func (db *Database) Close() error {
@@ -138,15 +167,16 @@ func (db *Database) Close() error {
 }
 
 // Has retrieves if a key is present in the key-value store.
-func (db *Database) Has(key []byte) (bool, error) {
-	return db.db.Has(key, nil)
+func (db *Database) Has(key []byte, from string) (bool, error) {
+	dat, err := db.db.Has(key, nil)
+	db.log.Debugf("DB Has %s. key:%s, value:%v", from, getStringKey(key), dat)
+	return dat, err
 }
 
 // Get retrieves the given key if it's present in the key-value store.
-func (db *Database) Get(key []byte) ([]byte, error) {
+func (db *Database) Get(key []byte, from string) ([]byte, error) {
 	dat, err := db.db.Get(key, nil)
-
-	db.log.Debugf("DB Get: key=%s, key=%X, data=%X", getStringKey(key), key, dat)
+	db.log.Debugf("DB Get %s. key:%s, vSize:%d", from, getStringKey(key), len(dat))
 
 	if err != nil {
 		return nil, err
@@ -155,17 +185,17 @@ func (db *Database) Get(key []byte) ([]byte, error) {
 }
 
 // Put inserts the given value into the key-value store.
-func (db *Database) Put(key []byte, value []byte) error {
-	db.log.Debugf("DB Put: key=%s, key=%X, data=%X", getStringKey(key), key, value)
-
-	return db.db.Put(key, value, nil)
+func (db *Database) Put(key []byte, value []byte, from string) error {
+	err := db.db.Put(key, value, nil)
+	db.log.Debugf("DB Put %s. key:%s, vSize:%d", from, getStringKey(key), len(value))
+	return err
 }
 
 // Delete removes the key from the key-value store.
-func (db *Database) Delete(key []byte) error {
-	db.log.Debugf("DB Delete: key=%s, key=%X", getStringKey(key), key)
-
-	return db.db.Delete(key, nil)
+func (db *Database) Delete(key []byte, from string) error {
+	err := db.db.Delete(key, nil)
+	db.log.Debugf("DB Delete %s. key:%s", from, getStringKey(key))
+	return err
 }
 
 // NewBatch creates a write-only key-value store that buffers changes to its host
@@ -177,23 +207,32 @@ func (db *Database) NewBatch() database.Batch {
 	}
 }
 
-// NewIterator creates a binary-alphabetical iterator over the entire keyspace
-// contained within the leveldb database.
-func (db *Database) NewIterator() database.Iterator {
-	return db.db.NewIterator(new(util.Range), nil)
+// NewBatchWithSize creates a write-only database batch with pre-allocated buffer.
+func (db *Database) NewBatchWithSize(size int) database.Batch {
+	return &batch{
+		db: db.db,
+		b:  leveldb.MakeBatch(size),
+	}
 }
 
-// NewIteratorWithStart creates a binary-alphabetical iterator over a subset of
-// database content starting at a particular initial key (or after, if it does
-// not exist).
-func (db *Database) NewIteratorWithStart(start []byte) database.Iterator {
-	return db.db.NewIterator(&util.Range{Start: start}, nil)
+// NewIterator creates a binary-alphabetical iterator over a subset
+// of database content with a particular key prefix, starting at a particular
+// initial key (or after, if it does not exist).
+func (db *Database) NewIterator(prefix []byte, start []byte) database.Iterator {
+	return db.db.NewIterator(bytesPrefixRange(prefix, start), nil)
 }
 
-// NewIteratorWithPrefix creates a binary-alphabetical iterator over a subset
-// of database content with a particular key prefix.
-func (db *Database) NewIteratorWithPrefix(prefix []byte) database.Iterator {
-	return db.db.NewIterator(util.BytesPrefix(prefix), nil)
+// NewSnapshot creates a database snapshot based on the current state.
+// The created snapshot will not be affected by all following mutations
+// happened on the database.
+// Note don't forget to release the snapshot once it's used up, otherwise
+// the stale data will never be cleaned up by the underlying compactor.
+func (db *Database) NewSnapshot() (database.Snapshot, error) {
+	snap, err := db.db.GetSnapshot()
+	if err != nil {
+		return nil, err
+	}
+	return &snapshot{db: snap}, nil
 }
 
 // Stat returns a particular internal stat of the database.
@@ -253,6 +292,9 @@ func (db *Database) meter(refresh time.Duration) {
 		errc chan error
 		merr error
 	)
+
+	timer := time.NewTimer(refresh)
+	defer timer.Stop()
 
 	// Iterate ad infinitum and collect the stats
 	for i := 1; errc == nil && merr == nil; i++ {
@@ -405,7 +447,8 @@ func (db *Database) meter(refresh time.Duration) {
 		select {
 		case errc = <-db.quitChan:
 			// Quit requesting, stop hammering the database
-		case <-time.After(refresh):
+		case <-timer.C:
+			timer.Reset(refresh)
 			// Timeout, gather a new set of stats
 		}
 	}
@@ -425,20 +468,18 @@ type batch struct {
 }
 
 // Put inserts the given value into the batch for later committing.
-func (b *batch) Put(key, value []byte) error {
-	log.Debugf("batch Put: key=%s, key=%X, data=%X", getStringKey(key), key, value)
-
+func (b *batch) Put(key, value []byte, from string) error {
 	b.b.Put(key, value)
-	b.size += len(value)
+	b.size += len(key) + len(value)
+	log.Debugf("batch Put %s. key:%s, vSize:%d, bSize:%d", from, getStringKey(key), len(value), b.size)
 	return nil
 }
 
 // Delete inserts the a key removal into the batch for later committing.
-func (b *batch) Delete(key []byte) error {
-	log.Debugf("batch Delete: key=%s, key=%X", getStringKey(key), key)
-
+func (b *batch) Delete(key []byte, from string) error {
 	b.b.Delete(key)
-	b.size++
+	b.size += len(key)
+	log.Debugf("batch Delete %s. key:%s, bSize:%d", from, getStringKey(key), b.size)
 	return nil
 }
 
@@ -471,24 +512,60 @@ type replayer struct {
 
 // Put inserts the given value into the key-value data store.
 func (r *replayer) Put(key, value []byte) {
-	log.Debugf("replayer Put: key=%s, key=%X, data=%X", getStringKey(key), key, value)
+	log.Debugf("replayer Put. key:%s, vSize:%d", getStringKey(key), len(value))
 
 	// If the replay already failed, stop executing ops
 	if r.failure != nil {
 		return
 	}
-	r.failure = r.writer.Put(key, value)
+	r.failure = r.writer.Put(key, value, "replayer")
 }
 
 // Delete removes the key from the key-value data store.
 func (r *replayer) Delete(key []byte) {
-	log.Debugf("replayer Delete: key=%s, key=%X", getStringKey(key), key)
+	log.Debugf("replayer Delete. key:%s", getStringKey(key))
 
 	// If the replay already failed, stop executing ops
 	if r.failure != nil {
 		return
 	}
-	r.failure = r.writer.Delete(key)
+	r.failure = r.writer.Delete(key, "replayer")
+}
+
+// bytesPrefixRange returns key range that satisfy
+// - the given prefix, and
+// - the given seek position
+func bytesPrefixRange(prefix, start []byte) *util.Range {
+	r := util.BytesPrefix(prefix)
+	r.Start = append(r.Start, start...)
+	return r
+}
+
+// snapshot wraps a leveldb snapshot for implementing the Snapshot interface.
+type snapshot struct {
+	db *leveldb.Snapshot
+}
+
+// Has retrieves if a key is present in the snapshot backing by a key-value
+// data store.
+func (snap *snapshot) Has(key []byte, from string) (bool, error) {
+	dat, err := snap.db.Has(key, nil)
+	log.Debugf("snap Has %s. key:%s, value:%v", from, getStringKey(key), dat)
+	return dat, err
+}
+
+// Get retrieves the given key if it's present in the snapshot backing by
+// key-value data store.
+func (snap *snapshot) Get(key []byte, from string) ([]byte, error) {
+	dat, err := snap.db.Get(key, nil)
+	log.Debugf("snap Get %s. key:%s, vSize:%v", from, getStringKey(key), len(dat))
+	return dat, err
+}
+
+// Release releases associated resources. Release should always succeed and can
+// be called multiple times without causing error.
+func (snap *snapshot) Release() {
+	snap.db.Release()
 }
 
 func getStringKey(key []byte) string {
@@ -500,6 +577,5 @@ func getStringKey(key []byte) string {
 			buf.WriteByte(0x7E)
 		}
 	}
-
 	return buf.String()
 }

@@ -5,28 +5,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
-
-	"github.com/entropyio/go-entropy"
+	entropyio "github.com/entropyio/go-entropy"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/hexutil"
-	"github.com/entropyio/go-entropy/common/rlputil"
 	"github.com/entropyio/go-entropy/rpc"
+	"math/big"
 )
 
 // Client defines typed wrappers for the Entropy RPC API.
 type Client struct {
-	c *rpc.Client
+	client *rpc.Client
 }
 
 // Dial connects a client to the given URL.
-func Dial(rawurl string) (*Client, error) {
-	return DialContext(context.Background(), rawurl)
+func Dial(rawUrl string) (*Client, error) {
+	return DialContext(context.Background(), rawUrl)
 }
 
-func DialContext(ctx context.Context, rawurl string) (*Client, error) {
-	c, err := rpc.DialContext(ctx, rawurl)
+func DialContext(ctx context.Context, rawUrl string) (*Client, error) {
+	c, err := rpc.DialContext(ctx, rawUrl)
 	if err != nil {
 		return nil, err
 	}
@@ -38,16 +36,16 @@ func NewClient(c *rpc.Client) *Client {
 	return &Client{c}
 }
 
-func (ec *Client) Close() {
-	ec.c.Close()
+func (c *Client) Close() {
+	c.client.Close()
 }
 
 // Blockchain Access
 
-// ChainId retrieves the current chain ID for transaction replay protection.
-func (ec *Client) ChainID(ctx context.Context) (*big.Int, error) {
+// ChainID retrieves the current chain ID for transaction replay protection.
+func (c *Client) ChainID(ctx context.Context) (*big.Int, error) {
 	var result hexutil.Big
-	err := ec.c.CallContext(ctx, &result, "eth_chainId")
+	err := c.client.CallContext(ctx, &result, "entropy_chainId")
 	if err != nil {
 		return nil, err
 	}
@@ -58,8 +56,8 @@ func (ec *Client) ChainID(ctx context.Context) (*big.Int, error) {
 //
 // Note that loading full blocks requires two requests. Use HeaderByHash
 // if you don't need all transactions or uncle headers.
-func (ec *Client) BlockByHash(ctx context.Context, hash common.Hash) (*model.Block, error) {
-	return ec.getBlock(ctx, "entropy_getBlockByHash", hash, true)
+func (c *Client) BlockByHash(ctx context.Context, hash common.Hash) (*model.Block, error) {
+	return c.getBlock(ctx, "entropy_getBlockByHash", hash, true)
 }
 
 // BlockByNumber returns a block from the current canonical chain. If number is nil, the
@@ -67,8 +65,22 @@ func (ec *Client) BlockByHash(ctx context.Context, hash common.Hash) (*model.Blo
 //
 // Note that loading full blocks requires two requests. Use HeaderByNumber
 // if you don't need all transactions or uncle headers.
-func (ec *Client) BlockByNumber(ctx context.Context, number *big.Int) (*model.Block, error) {
-	return ec.getBlock(ctx, "entropy_getBlockByNumber", toBlockNumArg(number), true)
+func (c *Client) BlockByNumber(ctx context.Context, number *big.Int) (*model.Block, error) {
+	return c.getBlock(ctx, "entropy_getBlockByNumber", toBlockNumArg(number), true)
+}
+
+// BlockNumber returns the most recent block number
+func (c *Client) BlockNumber(ctx context.Context) (uint64, error) {
+	var result hexutil.Uint64
+	err := c.client.CallContext(ctx, &result, "entropy_blockNumber")
+	return uint64(result), err
+}
+
+// PeerCount returns the number of p2p peers as reported by the net_peerCount method.
+func (c *Client) PeerCount(ctx context.Context) (uint64, error) {
+	var result hexutil.Uint64
+	err := c.client.CallContext(ctx, &result, "net_peerCount")
+	return uint64(result), err
 }
 
 type rpcBlock struct {
@@ -77,13 +89,13 @@ type rpcBlock struct {
 	UncleHashes  []common.Hash    `json:"uncles"`
 }
 
-func (ec *Client) getBlock(ctx context.Context, method string, args ...interface{}) (*model.Block, error) {
+func (c *Client) getBlock(ctx context.Context, method string, args ...interface{}) (*model.Block, error) {
 	var raw json.RawMessage
-	err := ec.c.CallContext(ctx, &raw, method, args...)
+	err := c.client.CallContext(ctx, &raw, method, args...)
 	if err != nil {
 		return nil, err
 	} else if len(raw) == 0 {
-		return nil, entropy.NotFound
+		return nil, entropyio.NotFound
 	}
 	// Decode header and transactions.
 	var head *model.Header
@@ -119,7 +131,7 @@ func (ec *Client) getBlock(ctx context.Context, method string, args ...interface
 				Result: &uncles[i],
 			}
 		}
-		if err := ec.c.BatchCallContext(ctx, reqs); err != nil {
+		if err := c.client.BatchCallContext(ctx, reqs); err != nil {
 			return nil, err
 		}
 		for i := range reqs {
@@ -143,22 +155,22 @@ func (ec *Client) getBlock(ctx context.Context, method string, args ...interface
 }
 
 // HeaderByHash returns the block header with the given hash.
-func (ec *Client) HeaderByHash(ctx context.Context, hash common.Hash) (*model.Header, error) {
+func (c *Client) HeaderByHash(ctx context.Context, hash common.Hash) (*model.Header, error) {
 	var head *model.Header
-	err := ec.c.CallContext(ctx, &head, "entropy_getBlockByHash", hash, false)
+	err := c.client.CallContext(ctx, &head, "entropy_getBlockByHash", hash, false)
 	if err == nil && head == nil {
-		err = entropy.NotFound
+		err = entropyio.NotFound
 	}
 	return head, err
 }
 
 // HeaderByNumber returns a block header from the current canonical chain. If number is
 // nil, the latest known header is returned.
-func (ec *Client) HeaderByNumber(ctx context.Context, number *big.Int) (*model.Header, error) {
+func (c *Client) HeaderByNumber(ctx context.Context, number *big.Int) (*model.Header, error) {
 	var head *model.Header
-	err := ec.c.CallContext(ctx, &head, "entropy_getBlockByNumber", toBlockNumArg(number), false)
+	err := c.client.CallContext(ctx, &head, "entropy_getBlockByNumber", toBlockNumArg(number), false)
 	if err == nil && head == nil {
-		err = entropy.NotFound
+		err = entropyio.NotFound
 	}
 	return head, err
 }
@@ -182,20 +194,20 @@ func (tx *rpcTransaction) UnmarshalJSON(msg []byte) error {
 }
 
 // TransactionByHash returns the transaction with the given hash.
-func (ec *Client) TransactionByHash(ctx context.Context, hash common.Hash) (tx *model.Transaction, isPending bool, err error) {
-	var json *rpcTransaction
-	err = ec.c.CallContext(ctx, &json, "entropy_getTransactionByHash", hash)
+func (c *Client) TransactionByHash(ctx context.Context, hash common.Hash) (*model.Transaction, bool, error) {
+	var rpcTx *rpcTransaction
+	err := c.client.CallContext(ctx, &rpcTx, "entropy_getTransactionByHash", hash)
 	if err != nil {
 		return nil, false, err
-	} else if json == nil {
-		return nil, false, entropy.NotFound
-	} else if _, r, _ := json.tx.RawSignatureValues(); r == nil {
+	} else if rpcTx == nil {
+		return nil, false, entropyio.NotFound
+	} else if _, r, _ := rpcTx.tx.RawSignatureValues(); r == nil {
 		return nil, false, fmt.Errorf("server returned transaction without signature")
 	}
-	if json.From != nil && json.BlockHash != nil {
-		setSenderFromServer(json.tx, *json.From, *json.BlockHash)
+	if rpcTx.From != nil && rpcTx.BlockHash != nil {
+		setSenderFromServer(rpcTx.tx, *rpcTx.From, *rpcTx.BlockHash)
 	}
-	return json.tx, json.BlockNumber == nil, nil
+	return rpcTx.tx, rpcTx.BlockNumber == nil, nil
 }
 
 // TransactionSender returns the sender address of the given transaction. The transaction
@@ -204,7 +216,7 @@ func (ec *Client) TransactionByHash(ctx context.Context, hash common.Hash) (tx *
 //
 // There is a fast-path for transactions retrieved by TransactionByHash and
 // TransactionInBlock. Getting their sender address can be done without an RPC interaction.
-func (ec *Client) TransactionSender(ctx context.Context, tx *model.Transaction, block common.Hash, index uint) (common.Address, error) {
+func (c *Client) TransactionSender(ctx context.Context, tx *model.Transaction, block common.Hash, index uint) (common.Address, error) {
 	// Try to load the address from the cache.
 	sender, err := model.Sender(&senderFromServer{blockhash: block}, tx)
 	if err == nil {
@@ -214,7 +226,7 @@ func (ec *Client) TransactionSender(ctx context.Context, tx *model.Transaction, 
 		Hash common.Hash
 		From common.Address
 	}
-	if err = ec.c.CallContext(ctx, &meta, "entropy_getTransactionByBlockHashAndIndex", block, hexutil.Uint64(index)); err != nil {
+	if err = c.client.CallContext(ctx, &meta, "entropy_getTransactionByBlockHashAndIndex", block, hexutil.Uint64(index)); err != nil {
 		return common.Address{}, err
 	}
 	if meta.Hash == (common.Hash{}) || meta.Hash != tx.Hash() {
@@ -224,63 +236,48 @@ func (ec *Client) TransactionSender(ctx context.Context, tx *model.Transaction, 
 }
 
 // TransactionCount returns the total number of transactions in the given block.
-func (ec *Client) TransactionCount(ctx context.Context, blockHash common.Hash) (uint, error) {
+func (c *Client) TransactionCount(ctx context.Context, blockHash common.Hash) (uint, error) {
 	var num hexutil.Uint
-	err := ec.c.CallContext(ctx, &num, "entropy_getBlockTransactionCountByHash", blockHash)
+	err := c.client.CallContext(ctx, &num, "entropy_getBlockTransactionCountByHash", blockHash)
 	return uint(num), err
 }
 
 // TransactionInBlock returns a single transaction at index in the given block.
-func (ec *Client) TransactionInBlock(ctx context.Context, blockHash common.Hash, index uint) (*model.Transaction, error) {
-	var json *rpcTransaction
-	err := ec.c.CallContext(ctx, &json, "entropy_getTransactionByBlockHashAndIndex", blockHash, hexutil.Uint64(index))
+func (c *Client) TransactionInBlock(ctx context.Context, blockHash common.Hash, index uint) (*model.Transaction, error) {
+	var rpcTx *rpcTransaction
+	err := c.client.CallContext(ctx, &rpcTx, "entropy_getTransactionByBlockHashAndIndex", blockHash, hexutil.Uint64(index))
 	if err != nil {
 		return nil, err
 	}
-	if json == nil {
-		return nil, entropy.NotFound
-	} else if _, r, _ := json.tx.RawSignatureValues(); r == nil {
+	if rpcTx == nil {
+		return nil, entropyio.NotFound
+	} else if _, r, _ := rpcTx.tx.RawSignatureValues(); r == nil {
 		return nil, fmt.Errorf("server returned transaction without signature")
 	}
-	if json.From != nil && json.BlockHash != nil {
-		setSenderFromServer(json.tx, *json.From, *json.BlockHash)
+	if rpcTx.From != nil && rpcTx.BlockHash != nil {
+		setSenderFromServer(rpcTx.tx, *rpcTx.From, *rpcTx.BlockHash)
 	}
-	return json.tx, err
+	return rpcTx.tx, err
 }
 
 // TransactionReceipt returns the receipt of a transaction by transaction hash.
 // Note that the receipt is not available for pending transactions.
-func (ec *Client) TransactionReceipt(ctx context.Context, txHash common.Hash) (*model.Receipt, error) {
+func (c *Client) TransactionReceipt(ctx context.Context, txHash common.Hash) (*model.Receipt, error) {
 	var r *model.Receipt
-	err := ec.c.CallContext(ctx, &r, "entropy_getTransactionReceipt", txHash)
+	err := c.client.CallContext(ctx, &r, "entropy_getTransactionReceipt", txHash)
 	if err == nil {
 		if r == nil {
-			return nil, entropy.NotFound
+			return nil, entropyio.NotFound
 		}
 	}
 	return r, err
 }
 
-func toBlockNumArg(number *big.Int) string {
-	if number == nil {
-		return "latest"
-	}
-	return hexutil.EncodeBig(number)
-}
-
-type rpcProgress struct {
-	StartingBlock hexutil.Uint64
-	CurrentBlock  hexutil.Uint64
-	HighestBlock  hexutil.Uint64
-	PulledStates  hexutil.Uint64
-	KnownStates   hexutil.Uint64
-}
-
 // SyncProgress retrieves the current progress of the sync algorithm. If there's
 // no sync currently running, it returns nil.
-func (ec *Client) SyncProgress(ctx context.Context) (*entropy.SyncProgress, error) {
+func (c *Client) SyncProgress(ctx context.Context) (*entropyio.SyncProgress, error) {
 	var raw json.RawMessage
-	if err := ec.c.CallContext(ctx, &raw, "entropy_syncing"); err != nil {
+	if err := c.client.CallContext(ctx, &raw, "entropy_syncing"); err != nil {
 		return nil, err
 	}
 	// Handle the possible response model
@@ -292,28 +289,22 @@ func (ec *Client) SyncProgress(ctx context.Context) (*entropy.SyncProgress, erro
 	if err := json.Unmarshal(raw, &progress); err != nil {
 		return nil, err
 	}
-	return &entropy.SyncProgress{
-		StartingBlock: uint64(progress.StartingBlock),
-		CurrentBlock:  uint64(progress.CurrentBlock),
-		HighestBlock:  uint64(progress.HighestBlock),
-		PulledStates:  uint64(progress.PulledStates),
-		KnownStates:   uint64(progress.KnownStates),
-	}, nil
+	return progress.toSyncProgress(), nil
 }
 
 // SubscribeNewHead subscribes to notifications about the current blockchain head
 // on the given channel.
-func (ec *Client) SubscribeNewHead(ctx context.Context, ch chan<- *model.Header) (entropy.Subscription, error) {
-	return ec.c.EthSubscribe(ctx, ch, "newHeads")
+func (c *Client) SubscribeNewHead(ctx context.Context, ch chan<- *model.Header) (entropyio.Subscription, error) {
+	return c.client.EntropySubscribe(ctx, ch, "newHeads")
 }
 
 // State Access
 
 // NetworkID returns the network ID (also known as the chain ID) for this chain.
-func (ec *Client) NetworkID(ctx context.Context) (*big.Int, error) {
+func (c *Client) NetworkID(ctx context.Context) (*big.Int, error) {
 	version := new(big.Int)
 	var ver string
-	if err := ec.c.CallContext(ctx, &ver, "net_version"); err != nil {
+	if err := c.client.CallContext(ctx, &ver, "net_version"); err != nil {
 		return nil, err
 	}
 	if _, ok := version.SetString(ver, 10); !ok {
@@ -324,59 +315,59 @@ func (ec *Client) NetworkID(ctx context.Context) (*big.Int, error) {
 
 // BalanceAt returns the wei balance of the given account.
 // The block number can be nil, in which case the balance is taken from the latest known block.
-func (ec *Client) BalanceAt(ctx context.Context, account common.Address, blockNumber *big.Int) (*big.Int, error) {
+func (c *Client) BalanceAt(ctx context.Context, account common.Address, blockNumber *big.Int) (*big.Int, error) {
 	var result hexutil.Big
-	err := ec.c.CallContext(ctx, &result, "entropy_getBalance", account, toBlockNumArg(blockNumber))
+	err := c.client.CallContext(ctx, &result, "entropy_getBalance", account, toBlockNumArg(blockNumber))
 	return (*big.Int)(&result), err
 }
 
 // StorageAt returns the value of key in the contract storage of the given account.
 // The block number can be nil, in which case the value is taken from the latest known block.
-func (ec *Client) StorageAt(ctx context.Context, account common.Address, key common.Hash, blockNumber *big.Int) ([]byte, error) {
+func (c *Client) StorageAt(ctx context.Context, account common.Address, key common.Hash, blockNumber *big.Int) ([]byte, error) {
 	var result hexutil.Bytes
-	err := ec.c.CallContext(ctx, &result, "entropy_getStorageAt", account, key, toBlockNumArg(blockNumber))
+	err := c.client.CallContext(ctx, &result, "entropy_getStorageAt", account, key, toBlockNumArg(blockNumber))
 	return result, err
 }
 
 // CodeAt returns the contract code of the given account.
 // The block number can be nil, in which case the code is taken from the latest known block.
-func (ec *Client) CodeAt(ctx context.Context, account common.Address, blockNumber *big.Int) ([]byte, error) {
+func (c *Client) CodeAt(ctx context.Context, account common.Address, blockNumber *big.Int) ([]byte, error) {
 	var result hexutil.Bytes
-	err := ec.c.CallContext(ctx, &result, "entropy_getCode", account, toBlockNumArg(blockNumber))
+	err := c.client.CallContext(ctx, &result, "entropy_getCode", account, toBlockNumArg(blockNumber))
 	return result, err
 }
 
 // NonceAt returns the account nonce of the given account.
 // The block number can be nil, in which case the nonce is taken from the latest known block.
-func (ec *Client) NonceAt(ctx context.Context, account common.Address, blockNumber *big.Int) (uint64, error) {
+func (c *Client) NonceAt(ctx context.Context, account common.Address, blockNumber *big.Int) (uint64, error) {
 	var result hexutil.Uint64
-	err := ec.c.CallContext(ctx, &result, "entropy_getTransactionCount", account, toBlockNumArg(blockNumber))
+	err := c.client.CallContext(ctx, &result, "entropy_getTransactionCount", account, toBlockNumArg(blockNumber))
 	return uint64(result), err
 }
 
 // Filters
 
 // FilterLogs executes a filter query.
-func (ec *Client) FilterLogs(ctx context.Context, q entropy.FilterQuery) ([]model.Log, error) {
+func (c *Client) FilterLogs(ctx context.Context, q entropyio.FilterQuery) ([]model.Log, error) {
 	var result []model.Log
 	arg, err := toFilterArg(q)
 	if err != nil {
 		return nil, err
 	}
-	err = ec.c.CallContext(ctx, &result, "entropy_getLogs", arg)
+	err = c.client.CallContext(ctx, &result, "entropy_getLogs", arg)
 	return result, err
 }
 
 // SubscribeFilterLogs subscribes to the results of a streaming filter query.
-func (ec *Client) SubscribeFilterLogs(ctx context.Context, q entropy.FilterQuery, ch chan<- model.Log) (entropy.Subscription, error) {
+func (c *Client) SubscribeFilterLogs(ctx context.Context, q entropyio.FilterQuery, ch chan<- model.Log) (entropyio.Subscription, error) {
 	arg, err := toFilterArg(q)
 	if err != nil {
 		return nil, err
 	}
-	return ec.c.EthSubscribe(ctx, ch, "logs", arg)
+	return c.client.EntropySubscribe(ctx, ch, "logs", arg)
 }
 
-func toFilterArg(q entropy.FilterQuery) (interface{}, error) {
+func toFilterArg(q entropyio.FilterQuery) (interface{}, error) {
 	arg := map[string]interface{}{
 		"address": q.Addresses,
 		"topics":  q.Topics,
@@ -400,42 +391,40 @@ func toFilterArg(q entropy.FilterQuery) (interface{}, error) {
 // Pending State
 
 // PendingBalanceAt returns the wei balance of the given account in the pending state.
-func (ec *Client) PendingBalanceAt(ctx context.Context, account common.Address) (*big.Int, error) {
+func (c *Client) PendingBalanceAt(ctx context.Context, account common.Address) (*big.Int, error) {
 	var result hexutil.Big
-	err := ec.c.CallContext(ctx, &result, "entropy_getBalance", account, "pending")
+	err := c.client.CallContext(ctx, &result, "entropy_getBalance", account, "pending")
 	return (*big.Int)(&result), err
 }
 
 // PendingStorageAt returns the value of key in the contract storage of the given account in the pending state.
-func (ec *Client) PendingStorageAt(ctx context.Context, account common.Address, key common.Hash) ([]byte, error) {
+func (c *Client) PendingStorageAt(ctx context.Context, account common.Address, key common.Hash) ([]byte, error) {
 	var result hexutil.Bytes
-	err := ec.c.CallContext(ctx, &result, "entropy_getStorageAt", account, key, "pending")
+	err := c.client.CallContext(ctx, &result, "entropy_getStorageAt", account, key, "pending")
 	return result, err
 }
 
 // PendingCodeAt returns the contract code of the given account in the pending state.
-func (ec *Client) PendingCodeAt(ctx context.Context, account common.Address) ([]byte, error) {
+func (c *Client) PendingCodeAt(ctx context.Context, account common.Address) ([]byte, error) {
 	var result hexutil.Bytes
-	err := ec.c.CallContext(ctx, &result, "entropy_getCode", account, "pending")
+	err := c.client.CallContext(ctx, &result, "entropy_getCode", account, "pending")
 	return result, err
 }
 
 // PendingNonceAt returns the account nonce of the given account in the pending state.
 // This is the nonce that should be used for the next transaction.
-func (ec *Client) PendingNonceAt(ctx context.Context, account common.Address) (uint64, error) {
+func (c *Client) PendingNonceAt(ctx context.Context, account common.Address) (uint64, error) {
 	var result hexutil.Uint64
-	err := ec.c.CallContext(ctx, &result, "entropy_getTransactionCount", account, "pending")
+	err := c.client.CallContext(ctx, &result, "entropy_getTransactionCount", account, "pending")
 	return uint64(result), err
 }
 
 // PendingTransactionCount returns the total number of transactions in the pending state.
-func (ec *Client) PendingTransactionCount(ctx context.Context) (uint, error) {
+func (c *Client) PendingTransactionCount(ctx context.Context) (uint, error) {
 	var num hexutil.Uint
-	err := ec.c.CallContext(ctx, &num, "entropy_getBlockTransactionCountByNumber", "pending")
+	err := c.client.CallContext(ctx, &num, "entropy_getBlockTransactionCountByNumber", "pending")
 	return uint(num), err
 }
-
-// TODO: SubscribePendingTransactions (needs server side)
 
 // Contract Calling
 
@@ -445,9 +434,20 @@ func (ec *Client) PendingTransactionCount(ctx context.Context) (uint, error) {
 // blockNumber selects the block height at which the call runs. It can be nil, in which
 // case the code is taken from the latest known block. Note that state from very old
 // blocks might not be available.
-func (ec *Client) CallContract(ctx context.Context, msg entropy.CallMsg, blockNumber *big.Int) ([]byte, error) {
+func (c *Client) CallContract(ctx context.Context, msg entropyio.CallMsg, blockNumber *big.Int) ([]byte, error) {
 	var hex hexutil.Bytes
-	err := ec.c.CallContext(ctx, &hex, "entropy_call", toCallArg(msg), toBlockNumArg(blockNumber))
+	err := c.client.CallContext(ctx, &hex, "entropy_call", toCallArg(msg), toBlockNumArg(blockNumber))
+	if err != nil {
+		return nil, err
+	}
+	return hex, nil
+}
+
+// CallContractAtHash is almost the same as CallContract except that it selects
+// the block by block hash instead of block height.
+func (c *Client) CallContractAtHash(ctx context.Context, msg entropyio.CallMsg, blockHash common.Hash) ([]byte, error) {
+	var hex hexutil.Bytes
+	err := c.client.CallContext(ctx, &hex, "entropy_call", toCallArg(msg), rpc.BlockNumberOrHashWithHash(blockHash, false))
 	if err != nil {
 		return nil, err
 	}
@@ -456,9 +456,9 @@ func (ec *Client) CallContract(ctx context.Context, msg entropy.CallMsg, blockNu
 
 // PendingCallContract executes a message call transaction using the EVM.
 // The state seen by the contract call is the pending state.
-func (ec *Client) PendingCallContract(ctx context.Context, msg entropy.CallMsg) ([]byte, error) {
+func (c *Client) PendingCallContract(ctx context.Context, msg entropyio.CallMsg) ([]byte, error) {
 	var hex hexutil.Bytes
-	err := ec.c.CallContext(ctx, &hex, "entropy_call", toCallArg(msg), "pending")
+	err := c.client.CallContext(ctx, &hex, "entropy_call", toCallArg(msg), "pending")
 	if err != nil {
 		return nil, err
 	}
@@ -467,9 +467,19 @@ func (ec *Client) PendingCallContract(ctx context.Context, msg entropy.CallMsg) 
 
 // SuggestGasPrice retrieves the currently suggested gas price to allow a timely
 // execution of a transaction.
-func (ec *Client) SuggestGasPrice(ctx context.Context) (*big.Int, error) {
+func (c *Client) SuggestGasPrice(ctx context.Context) (*big.Int, error) {
 	var hex hexutil.Big
-	if err := ec.c.CallContext(ctx, &hex, "entropy_gasPrice"); err != nil {
+	if err := c.client.CallContext(ctx, &hex, "entropy_gasPrice"); err != nil {
+		return nil, err
+	}
+	return (*big.Int)(&hex), nil
+}
+
+// SuggestGasTipCap retrieves the currently suggested gas tip cap after 1559 to
+// allow a timely execution of a transaction.
+func (c *Client) SuggestGasTipCap(ctx context.Context) (*big.Int, error) {
+	var hex hexutil.Big
+	if err := c.client.CallContext(ctx, &hex, "entropy_maxPriorityFeePerGas"); err != nil {
 		return nil, err
 	}
 	return (*big.Int)(&hex), nil
@@ -479,9 +489,9 @@ func (ec *Client) SuggestGasPrice(ctx context.Context) (*big.Int, error) {
 // the current pending state of the backend blockchain. There is no guarantee that this is
 // the true gas limit requirement as other transactions may be added or removed by miners,
 // but it should provide a basis for setting a reasonable default.
-func (ec *Client) EstimateGas(ctx context.Context, msg entropy.CallMsg) (uint64, error) {
+func (c *Client) EstimateGas(ctx context.Context, msg entropyio.CallMsg) (uint64, error) {
 	var hex hexutil.Uint64
-	err := ec.c.CallContext(ctx, &hex, "entropy_estimateGas", toCallArg(msg))
+	err := c.client.CallContext(ctx, &hex, "entropy_estimateGas", toCallArg(msg))
 	if err != nil {
 		return 0, err
 	}
@@ -492,15 +502,26 @@ func (ec *Client) EstimateGas(ctx context.Context, msg entropy.CallMsg) (uint64,
 //
 // If the transaction was a contract creation use the TransactionReceipt method to get the
 // contract address after the transaction has been mined.
-func (ec *Client) SendTransaction(ctx context.Context, tx *model.Transaction) error {
-	data, err := rlputil.EncodeToBytes(tx)
+func (c *Client) SendTransaction(ctx context.Context, tx *model.Transaction) error {
+	data, err := tx.MarshalBinary()
 	if err != nil {
 		return err
 	}
-	return ec.c.CallContext(ctx, nil, "entropy_sendRawTransaction", hexutil.Encode(data))
+	return c.client.CallContext(ctx, nil, "entropy_sendRawTransaction", hexutil.Encode(data))
 }
 
-func toCallArg(msg entropy.CallMsg) interface{} {
+func toBlockNumArg(number *big.Int) string {
+	if number == nil {
+		return "latest"
+	}
+	pending := big.NewInt(-1)
+	if number.Cmp(pending) == 0 {
+		return "pending"
+	}
+	return hexutil.EncodeBig(number)
+}
+
+func toCallArg(msg entropyio.CallMsg) interface{} {
 	arg := map[string]interface{}{
 		"from": msg.From,
 		"to":   msg.To,
@@ -518,4 +539,52 @@ func toCallArg(msg entropy.CallMsg) interface{} {
 		arg["gasPrice"] = (*hexutil.Big)(msg.GasPrice)
 	}
 	return arg
+}
+
+// rpcProgress is a copy of SyncProgress with hex-encoded fields.
+type rpcProgress struct {
+	StartingBlock hexutil.Uint64
+	CurrentBlock  hexutil.Uint64
+	HighestBlock  hexutil.Uint64
+
+	PulledStates hexutil.Uint64
+	KnownStates  hexutil.Uint64
+
+	SyncedAccounts      hexutil.Uint64
+	SyncedAccountBytes  hexutil.Uint64
+	SyncedBytecodes     hexutil.Uint64
+	SyncedBytecodeBytes hexutil.Uint64
+	SyncedStorage       hexutil.Uint64
+	SyncedStorageBytes  hexutil.Uint64
+	HealedTrienodes     hexutil.Uint64
+	HealedTrienodeBytes hexutil.Uint64
+	HealedBytecodes     hexutil.Uint64
+	HealedBytecodeBytes hexutil.Uint64
+	HealingTrienodes    hexutil.Uint64
+	HealingBytecode     hexutil.Uint64
+}
+
+func (p *rpcProgress) toSyncProgress() *entropyio.SyncProgress {
+	if p == nil {
+		return nil
+	}
+	return &entropyio.SyncProgress{
+		StartingBlock:       uint64(p.StartingBlock),
+		CurrentBlock:        uint64(p.CurrentBlock),
+		HighestBlock:        uint64(p.HighestBlock),
+		PulledStates:        uint64(p.PulledStates),
+		KnownStates:         uint64(p.KnownStates),
+		SyncedAccounts:      uint64(p.SyncedAccounts),
+		SyncedAccountBytes:  uint64(p.SyncedAccountBytes),
+		SyncedBytecodes:     uint64(p.SyncedBytecodes),
+		SyncedBytecodeBytes: uint64(p.SyncedBytecodeBytes),
+		SyncedStorage:       uint64(p.SyncedStorage),
+		SyncedStorageBytes:  uint64(p.SyncedStorageBytes),
+		HealedTrienodes:     uint64(p.HealedTrienodes),
+		HealedTrienodeBytes: uint64(p.HealedTrienodeBytes),
+		HealedBytecodes:     uint64(p.HealedBytecodes),
+		HealedBytecodeBytes: uint64(p.HealedBytecodeBytes),
+		HealingTrienodes:    uint64(p.HealingTrienodes),
+		HealingBytecode:     uint64(p.HealingBytecode),
+	}
 }

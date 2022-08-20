@@ -2,15 +2,13 @@ package blockchain
 
 import (
 	"fmt"
-	"math/big"
-
-	"github.com/entropyio/go-entropy/blockchain/genesis"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus/ethash"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/evm"
+	"math/big"
 )
 
 func ExampleGenerateChain() {
@@ -21,21 +19,21 @@ func ExampleGenerateChain() {
 		addr1   = crypto.PubkeyToAddress(key1.PublicKey)
 		addr2   = crypto.PubkeyToAddress(key2.PublicKey)
 		addr3   = crypto.PubkeyToAddress(key3.PublicKey)
-		db      = mapper.NewMemoryDatabase()
+		db      = rawdb.NewMemoryDatabase()
 	)
 
 	// Ensure that key1 has some funds in the genesis block.
-	gspec := &genesis.Genesis{
+	gspec := &Genesis{
 		Config: &config.ChainConfig{HomesteadBlock: new(big.Int)},
-		Alloc:  genesis.GenesisAlloc{addr1: {Balance: big.NewInt(1000000)}},
+		Alloc:  GenesisAlloc{addr1: {Balance: big.NewInt(1000000)}},
 	}
-	genesisObj := gspec.MustCommit(db)
+	genesis := gspec.MustCommit(db)
 
 	// This call generates a chain of 5 blocks. The function runs for
 	// each block and adds different features to gen based on the
 	// block index.
 	signer := model.HomesteadSigner{}
-	chain, _ := GenerateChain(gspec.Config, genesisObj, ethash.NewFaker(), db, 5, func(i int, gen *BlockGen) {
+	chain, _ := GenerateChain(gspec.Config, genesis, ethash.NewFaker(), db, 5, func(i int, gen *BlockGen) {
 		switch i {
 		case 0:
 			// In block 1, addr1 sends addr2 some ether.
@@ -64,7 +62,7 @@ func ExampleGenerateChain() {
 	})
 
 	// Import the chain. This runs all block validation rules.
-	blockchain, _ := NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{}, nil)
+	blockchain, _ := NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{}, nil, nil)
 	defer blockchain.Stop()
 
 	if i, err := blockchain.InsertChain(chain); err != nil {

@@ -1,16 +1,15 @@
 package runtime
 
 import (
-	"math"
-	"math/big"
-	"time"
-
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/config"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/evm"
+	"math"
+	"math/big"
+	"time"
 )
 
 // Config is a basic type specifying certain configuration flags for running
@@ -27,6 +26,7 @@ type Config struct {
 	Value       *big.Int
 	Debug       bool
 	EVMConfig   evm.Config
+	BaseFee     *big.Int
 
 	State     *state.StateDB
 	GetHashFn func(n uint64) common.Hash
@@ -39,8 +39,6 @@ func setDefaults(cfg *Config) {
 			ChainID:        big.NewInt(1),
 			HomesteadBlock: new(big.Int),
 			EIP150Block:    new(big.Int),
-			EIP155Block:    new(big.Int),
-			EIP158Block:    new(big.Int),
 		}
 	}
 
@@ -67,13 +65,16 @@ func setDefaults(cfg *Config) {
 			return common.BytesToHash(crypto.Keccak256([]byte(new(big.Int).SetUint64(n).String())))
 		}
 	}
+	if cfg.BaseFee == nil {
+		cfg.BaseFee = big.NewInt(config.InitialBaseFee)
+	}
 }
 
 // Execute executes the code using the input as call data during the execution.
 // It returns the EVM's return value, the new state and an error if it failed.
 //
-// Executes sets up a in memory, temporarily, environment for the execution of
-// the given code. It makes sure that it's restored to it's original state afterwards.
+// Execute sets up an in-memory, temporary, environment for the execution of
+// the given code. It makes sure that it's restored to its original state afterwards.
 func Execute(code, input []byte, cfg *Config) ([]byte, *state.StateDB, error) {
 	if cfg == nil {
 		cfg = new(Config)
@@ -81,13 +82,14 @@ func Execute(code, input []byte, cfg *Config) ([]byte, *state.StateDB, error) {
 	setDefaults(cfg)
 
 	if cfg.State == nil {
-		cfg.State, _ = state.New(common.Hash{}, state.NewDatabase(mapper.NewMemoryDatabase()))
+		cfg.State, _ = state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
 	}
 	var (
 		address = common.BytesToAddress([]byte("contract"))
 		vmenv   = NewEnv(cfg)
 		sender  = evm.AccountRef(cfg.Origin)
 	)
+
 	cfg.State.CreateAccount(address)
 	// set the receiver's (the executing contract) code for execution.
 	cfg.State.SetCode(address, code)
@@ -111,13 +113,12 @@ func Create(input []byte, cfg *Config) ([]byte, common.Address, uint64, error) {
 	setDefaults(cfg)
 
 	if cfg.State == nil {
-		cfg.State, _ = state.New(common.Hash{}, state.NewDatabase(mapper.NewMemoryDatabase()))
+		cfg.State, _ = state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
 	}
 	var (
 		vmenv  = NewEnv(cfg)
 		sender = evm.AccountRef(cfg.Origin)
 	)
-
 	// Call the code with the given configuration.
 	code, address, leftOverGas, err := vmenv.Create(
 		sender,
@@ -139,6 +140,7 @@ func Call(address common.Address, input []byte, cfg *Config) ([]byte, uint64, er
 	vmenv := NewEnv(cfg)
 
 	sender := cfg.State.GetOrNewStateObject(cfg.Origin)
+
 	// Call the code with the given configuration.
 	ret, leftOverGas, err := vmenv.Call(
 		sender,
@@ -147,6 +149,5 @@ func Call(address common.Address, input []byte, cfg *Config) ([]byte, uint64, er
 		cfg.GasLimit,
 		cfg.Value,
 	)
-
 	return ret, leftOverGas, err
 }

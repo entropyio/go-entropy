@@ -4,13 +4,12 @@ import (
 	"bytes"
 	"encoding/binary"
 	"fmt"
+	"github.com/entropyio/go-entropy/common/rlp"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 	"math/rand"
 	"testing"
 	"time"
-
-	"github.com/entropyio/go-entropy/common/rlputil"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
 var rnd = rand.New(rand.NewSource(time.Now().UnixNano()))
@@ -133,7 +132,7 @@ func TestSortedGetAndSet(t *testing.T) {
 func TestDirty(t *testing.T) {
 	var r Record
 
-	if _, err := rlputil.EncodeToBytes(r); err != errEncodeUnsigned {
+	if _, err := rlp.EncodeToBytes(r); err != errEncodeUnsigned {
 		t.Errorf("expected errEncodeUnsigned, got %#v", err)
 	}
 
@@ -141,14 +140,14 @@ func TestDirty(t *testing.T) {
 	if len(r.signature) == 0 {
 		t.Error("record is not signed")
 	}
-	_, err := rlputil.EncodeToBytes(r)
+	_, err := rlp.EncodeToBytes(r)
 	assert.NoError(t, err)
 
 	r.SetSeq(3)
 	if len(r.signature) != 0 {
 		t.Error("signature still set after modification")
 	}
-	if _, err := rlputil.EncodeToBytes(r); err != errEncodeUnsigned {
+	if _, err := rlp.EncodeToBytes(r); err != errEncodeUnsigned {
 		t.Errorf("expected errEncodeUnsigned, got %#v", err)
 	}
 }
@@ -187,14 +186,14 @@ func TestSignEncodeAndDecode(t *testing.T) {
 	r.Set(IPv4{127, 0, 0, 1})
 	require.NoError(t, signTest([]byte{5}, &r))
 
-	blob, err := rlputil.EncodeToBytes(r)
+	blob, err := rlp.EncodeToBytes(r)
 	require.NoError(t, err)
 
 	var r2 Record
-	require.NoError(t, rlputil.DecodeBytes(blob, &r2))
+	require.NoError(t, rlp.DecodeBytes(blob, &r2))
 	assert.Equal(t, r, r2)
 
-	blob2, err := rlputil.EncodeToBytes(r2)
+	blob2, err := rlp.EncodeToBytes(r2)
 	require.NoError(t, err)
 	assert.Equal(t, blob, blob2)
 }
@@ -215,6 +214,29 @@ func TestRecordTooBig(t *testing.T) {
 	require.NoError(t, signTest([]byte{5}, &r))
 }
 
+// This checks that incomplete RLP inputs are handled correctly.
+func TestDecodeIncomplete(t *testing.T) {
+	type decTest struct {
+		input []byte
+		err   error
+	}
+	tests := []decTest{
+		{[]byte{0xC0}, errIncompleteList},
+		{[]byte{0xC1, 0x1}, errIncompleteList},
+		{[]byte{0xC2, 0x1, 0x2}, nil},
+		{[]byte{0xC3, 0x1, 0x2, 0x3}, errIncompletePair},
+		{[]byte{0xC4, 0x1, 0x2, 0x3, 0x4}, nil},
+		{[]byte{0xC5, 0x1, 0x2, 0x3, 0x4, 0x5}, errIncompletePair},
+	}
+	for _, test := range tests {
+		var r Record
+		err := rlp.DecodeBytes(test.input, &r)
+		if err != test.err {
+			t.Errorf("wrong error for %X: %v", test.input, err)
+		}
+	}
+}
+
 // TestSignEncodeAndDecodeRandom tests encoding/decoding of records containing random key/value pairs.
 func TestSignEncodeAndDecodeRandom(t *testing.T) {
 	var r Record
@@ -229,7 +251,7 @@ func TestSignEncodeAndDecodeRandom(t *testing.T) {
 	}
 
 	require.NoError(t, signTest([]byte{5}, &r))
-	_, err := rlputil.EncodeToBytes(r)
+	_, err := rlp.EncodeToBytes(r)
 	require.NoError(t, err)
 
 	for k, v := range pairs {

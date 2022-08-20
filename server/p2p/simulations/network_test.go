@@ -1,6 +1,7 @@
 package simulations
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,8 +23,8 @@ func TestSnapshot(t *testing.T) {
 	// create snapshot from ring network
 
 	// this is a minimal service, whose protocol will take exactly one message OR close of connection before quitting
-	adapter := adapters.NewSimAdapter(adapters.Services{
-		"noopwoop": func(ctx *adapters.ServiceContext) (node.Service, error) {
+	adapter := adapters.NewSimAdapter(adapters.LifecycleConstructors{
+		"noopwoop": func(ctx *adapters.ServiceContext, stack *node.Node) (node.Lifecycle, error) {
 			return NewNoopService(nil), nil
 		},
 	})
@@ -146,8 +147,8 @@ OUTER:
 	// PART II
 	// load snapshot and verify that exactly same connections are formed
 
-	adapter = adapters.NewSimAdapter(adapters.Services{
-		"noopwoop": func(ctx *adapters.ServiceContext) (node.Service, error) {
+	adapter = adapters.NewSimAdapter(adapters.LifecycleConstructors{
+		"noopwoop": func(ctx *adapters.ServiceContext, stack *node.Node) (node.Lifecycle, error) {
 			return NewNoopService(nil), nil
 		},
 	})
@@ -237,8 +238,8 @@ OuterTwo:
 	t.Run("conns after load", func(t *testing.T) {
 		// Create new network.
 		n := NewNetwork(
-			adapters.NewSimAdapter(adapters.Services{
-				"noopwoop": func(ctx *adapters.ServiceContext) (node.Service, error) {
+			adapters.NewSimAdapter(adapters.LifecycleConstructors{
+				"noopwoop": func(ctx *adapters.ServiceContext, stack *node.Node) (node.Lifecycle, error) {
 					return NewNoopService(nil), nil
 				},
 			}),
@@ -269,7 +270,7 @@ OuterTwo:
 // with each other and that a snapshot fully represents the desired topology
 func TestNetworkSimulation(t *testing.T) {
 	// create simulation network with 20 testService nodes
-	adapter := adapters.NewSimAdapter(adapters.Services{
+	adapter := adapters.NewSimAdapter(adapters.LifecycleConstructors{
 		"test": newTestService,
 	})
 	network := NewNetwork(adapter, &NetworkConfig{
@@ -418,7 +419,7 @@ func createTestNodesWithProperty(property string, count int, network *Network) (
 // It then tests again whilst excluding a node ID from being returned.
 // If a node ID is not returned, or more node IDs than expected are returned, the test fails.
 func TestGetNodeIDs(t *testing.T) {
-	adapter := adapters.NewSimAdapter(adapters.Services{
+	adapter := adapters.NewSimAdapter(adapters.LifecycleConstructors{
 		"test": newTestService,
 	})
 	network := NewNetwork(adapter, &NetworkConfig{
@@ -429,7 +430,7 @@ func TestGetNodeIDs(t *testing.T) {
 	numNodes := 5
 	nodes, err := createTestNodes(numNodes, network)
 	if err != nil {
-		t.Fatalf("Could not creat test nodes %v", err)
+		t.Fatalf("Could not create test nodes %v", err)
 	}
 
 	gotNodeIDs := network.GetNodeIDs()
@@ -467,7 +468,7 @@ func TestGetNodeIDs(t *testing.T) {
 // It then tests again whilst excluding a node from being returned.
 // If a node is not returned, or more nodes than expected are returned, the test fails.
 func TestGetNodes(t *testing.T) {
-	adapter := adapters.NewSimAdapter(adapters.Services{
+	adapter := adapters.NewSimAdapter(adapters.LifecycleConstructors{
 		"test": newTestService,
 	})
 	network := NewNetwork(adapter, &NetworkConfig{
@@ -478,7 +479,7 @@ func TestGetNodes(t *testing.T) {
 	numNodes := 5
 	nodes, err := createTestNodes(numNodes, network)
 	if err != nil {
-		t.Fatalf("Could not creat test nodes %v", err)
+		t.Fatalf("Could not create test nodes %v", err)
 	}
 
 	gotNodes := network.GetNodes()
@@ -515,7 +516,7 @@ func TestGetNodes(t *testing.T) {
 // TestGetNodesByID creates a set of nodes and attempts to retrieve a subset of them by ID
 // If a node is not returned, or more nodes than expected are returned, the test fails.
 func TestGetNodesByID(t *testing.T) {
-	adapter := adapters.NewSimAdapter(adapters.Services{
+	adapter := adapters.NewSimAdapter(adapters.LifecycleConstructors{
 		"test": newTestService,
 	})
 	network := NewNetwork(adapter, &NetworkConfig{
@@ -560,7 +561,7 @@ func TestGetNodesByID(t *testing.T) {
 // GetNodesByProperty is then checked for correctness by comparing the nodes returned to those initially created.
 // If a node with a property is not found, or more nodes than expected are returned, the test fails.
 func TestGetNodesByProperty(t *testing.T) {
-	adapter := adapters.NewSimAdapter(adapters.Services{
+	adapter := adapters.NewSimAdapter(adapters.LifecycleConstructors{
 		"test": newTestService,
 	})
 	network := NewNetwork(adapter, &NetworkConfig{
@@ -605,7 +606,7 @@ func TestGetNodesByProperty(t *testing.T) {
 // GetNodeIDsByProperty is then checked for correctness by comparing the node IDs returned to those initially created.
 // If a node ID with a property is not found, or more nodes IDs than expected are returned, the test fails.
 func TestGetNodeIDsByProperty(t *testing.T) {
-	adapter := adapters.NewSimAdapter(adapters.Services{
+	adapter := adapters.NewSimAdapter(adapters.LifecycleConstructors{
 		"test": newTestService,
 	})
 	network := NewNetwork(adapter, &NetworkConfig{
@@ -686,8 +687,8 @@ func benchmarkMinimalServiceTmp(b *testing.B) {
 		// this is a minimal service, whose protocol will close a channel upon run of protocol
 		// making it possible to bench the time it takes for the service to start and protocol actually to be run
 		protoCMap := make(map[enode.ID]map[enode.ID]chan struct{})
-		adapter := adapters.NewSimAdapter(adapters.Services{
-			"noopwoop": func(ctx *adapters.ServiceContext) (node.Service, error) {
+		adapter := adapters.NewSimAdapter(adapters.LifecycleConstructors{
+			"noopwoop": func(ctx *adapters.ServiceContext, stack *node.Node) (node.Lifecycle, error) {
 				protoCMap[ctx.Config.ID] = make(map[enode.ID]chan struct{})
 				svc := NewNoopService(protoCMap[ctx.Config.ID])
 				return svc, nil

@@ -1,9 +1,8 @@
 package asm
 
 import (
-	"testing"
-
 	"encoding/hex"
+	"testing"
 )
 
 // Tests disassembling the instructions for valid evm code

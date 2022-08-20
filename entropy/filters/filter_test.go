@@ -2,19 +2,15 @@ package filters
 
 import (
 	"context"
-	"io/ioutil"
-	"math/big"
-	"os"
-	"testing"
-
 	"github.com/entropyio/go-entropy/blockchain"
-	"github.com/entropyio/go-entropy/blockchain/genesis"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus/ethash"
+	"github.com/entropyio/go-entropy/database/rawdb"
+	"math/big"
+	"testing"
 )
 
 func makeReceipt(addr common.Address) *model.Receipt {
@@ -27,46 +23,46 @@ func makeReceipt(addr common.Address) *model.Receipt {
 }
 
 func BenchmarkFilters(b *testing.B) {
-	dir, err := ioutil.TempDir("", "filtertest")
-	if err != nil {
-		b.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
+	dir := b.TempDir()
 
 	var (
-		db, _   = rawdb.NewLevelDBDatabase(dir, 0, 0, "")
+		db, _   = rawdb.NewLevelDBDatabase(dir, 0, 0, "", false)
 		backend = &testBackend{db: db}
 		key1, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
 		addr1   = crypto.PubkeyToAddress(key1.PublicKey)
 		addr2   = common.BytesToAddress([]byte("jeff"))
-		addr3   = common.BytesToAddress([]byte("ethereum"))
+		addr3   = common.BytesToAddress([]byte("entropy"))
 		addr4   = common.BytesToAddress([]byte("random addresses please"))
 	)
 	defer db.Close()
 
-	genesisObj := genesis.GenesisBlockForTesting(db, addr1, big.NewInt(1000000))
-	chain, receipts := blockchain.GenerateChain(config.TestChainConfig, genesisObj, ethash.NewFaker(), db, 100010, func(i int, gen *blockchain.BlockGen) {
+	genesis := blockchain.GenesisBlockForTesting(db, addr1, big.NewInt(1000000))
+	chain, receipts := blockchain.GenerateChain(config.TestChainConfig, genesis, ethash.NewFaker(), db, 100010, func(i int, gen *blockchain.BlockGen) {
 		switch i {
 		case 2403:
 			receipt := makeReceipt(addr1)
 			gen.AddUncheckedReceipt(receipt)
+			gen.AddUncheckedTx(model.NewTransaction(999, common.HexToAddress("0x999"), big.NewInt(999), 999, gen.BaseFee(), nil))
 		case 1034:
 			receipt := makeReceipt(addr2)
 			gen.AddUncheckedReceipt(receipt)
+			gen.AddUncheckedTx(model.NewTransaction(999, common.HexToAddress("0x999"), big.NewInt(999), 999, gen.BaseFee(), nil))
 		case 34:
 			receipt := makeReceipt(addr3)
 			gen.AddUncheckedReceipt(receipt)
+			gen.AddUncheckedTx(model.NewTransaction(999, common.HexToAddress("0x999"), big.NewInt(999), 999, gen.BaseFee(), nil))
 		case 99999:
 			receipt := makeReceipt(addr4)
 			gen.AddUncheckedReceipt(receipt)
+			gen.AddUncheckedTx(model.NewTransaction(999, common.HexToAddress("0x999"), big.NewInt(999), 999, gen.BaseFee(), nil))
 
 		}
 	})
 	for i, block := range chain {
-		mapper.WriteBlock(db, block)
-		mapper.WriteCanonicalHash(db, block.Hash(), block.NumberU64())
-		mapper.WriteHeadBlockHash(db, block.Hash())
-		mapper.WriteReceipts(db, block.Hash(), block.NumberU64(), receipts[i])
+		rawdb.WriteBlock(db, block)
+		rawdb.WriteCanonicalHash(db, block.Hash(), block.NumberU64())
+		rawdb.WriteHeadBlockHash(db, block.Hash())
+		rawdb.WriteReceipts(db, block.Hash(), block.NumberU64(), receipts[i])
 	}
 	b.ResetTimer()
 
@@ -81,14 +77,10 @@ func BenchmarkFilters(b *testing.B) {
 }
 
 func TestFilters(t *testing.T) {
-	dir, err := ioutil.TempDir("", "filtertest")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer os.RemoveAll(dir)
+	dir := t.TempDir()
 
 	var (
-		db, _   = rawdb.NewLevelDBDatabase(dir, 0, 0, "")
+		db, _   = rawdb.NewLevelDBDatabase(dir, 0, 0, "", false)
 		backend = &testBackend{db: db}
 		key1, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
 		addr    = crypto.PubkeyToAddress(key1.PublicKey)
@@ -100,8 +92,8 @@ func TestFilters(t *testing.T) {
 	)
 	defer db.Close()
 
-	genesisObj := genesis.GenesisBlockForTesting(db, addr, big.NewInt(1000000))
-	chain, receipts := blockchain.GenerateChain(config.TestChainConfig, genesisObj, ethash.NewFaker(), db, 1000, func(i int, gen *blockchain.BlockGen) {
+	genesis := blockchain.GenesisBlockForTesting(db, addr, big.NewInt(1000000))
+	chain, receipts := blockchain.GenerateChain(config.TestChainConfig, genesis, ethash.NewFaker(), db, 1000, func(i int, gen *blockchain.BlockGen) {
 		switch i {
 		case 1:
 			receipt := model.NewReceipt(nil, false, 0)
@@ -112,7 +104,7 @@ func TestFilters(t *testing.T) {
 				},
 			}
 			gen.AddUncheckedReceipt(receipt)
-			gen.AddUncheckedTx(model.NewTransaction(1, common.HexToAddress("0x1"), big.NewInt(1), 1, big.NewInt(1), nil))
+			gen.AddUncheckedTx(model.NewTransaction(1, common.HexToAddress("0x1"), big.NewInt(1), 1, gen.BaseFee(), nil))
 		case 2:
 			receipt := model.NewReceipt(nil, false, 0)
 			receipt.Logs = []*model.Log{
@@ -122,7 +114,7 @@ func TestFilters(t *testing.T) {
 				},
 			}
 			gen.AddUncheckedReceipt(receipt)
-			gen.AddUncheckedTx(model.NewTransaction(2, common.HexToAddress("0x2"), big.NewInt(2), 2, big.NewInt(2), nil))
+			gen.AddUncheckedTx(model.NewTransaction(2, common.HexToAddress("0x2"), big.NewInt(2), 2, gen.BaseFee(), nil))
 
 		case 998:
 			receipt := model.NewReceipt(nil, false, 0)
@@ -133,7 +125,7 @@ func TestFilters(t *testing.T) {
 				},
 			}
 			gen.AddUncheckedReceipt(receipt)
-			gen.AddUncheckedTx(model.NewTransaction(998, common.HexToAddress("0x998"), big.NewInt(998), 998, big.NewInt(998), nil))
+			gen.AddUncheckedTx(model.NewTransaction(998, common.HexToAddress("0x998"), big.NewInt(998), 998, gen.BaseFee(), nil))
 		case 999:
 			receipt := model.NewReceipt(nil, false, 0)
 			receipt.Logs = []*model.Log{
@@ -143,14 +135,14 @@ func TestFilters(t *testing.T) {
 				},
 			}
 			gen.AddUncheckedReceipt(receipt)
-			gen.AddUncheckedTx(model.NewTransaction(999, common.HexToAddress("0x999"), big.NewInt(999), 999, big.NewInt(999), nil))
+			gen.AddUncheckedTx(model.NewTransaction(999, common.HexToAddress("0x999"), big.NewInt(999), 999, gen.BaseFee(), nil))
 		}
 	})
 	for i, block := range chain {
-		mapper.WriteBlock(db, block)
-		mapper.WriteCanonicalHash(db, block.Hash(), block.NumberU64())
-		mapper.WriteHeadBlockHash(db, block.Hash())
-		mapper.WriteReceipts(db, block.Hash(), block.NumberU64(), receipts[i])
+		rawdb.WriteBlock(db, block)
+		rawdb.WriteCanonicalHash(db, block.Hash(), block.NumberU64())
+		rawdb.WriteHeadBlockHash(db, block.Hash())
+		rawdb.WriteReceipts(db, block.Hash(), block.NumberU64(), receipts[i])
 	}
 
 	filter := NewRangeFilter(backend, 0, -1, []common.Address{addr}, [][]common.Hash{{hash1, hash2, hash3, hash4}})

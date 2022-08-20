@@ -10,6 +10,7 @@ import (
 	crand "crypto/rand"
 	"encoding/binary"
 	"fmt"
+	"github.com/op/go-logging"
 	mrand "math/rand"
 	"net"
 	"sort"
@@ -54,6 +55,7 @@ type Table struct {
 	rand    *mrand.Rand       // source of randomness, periodically reseeded
 	ips     netutil.DistinctNetSet
 
+	log        *logging.Logger
 	db         *enode.DB // database of known nodes
 	net        transport
 	refreshReq chan chan struct{}
@@ -91,6 +93,7 @@ func newTable(t transport, db *enode.DB, bootnodes []*enode.Node) (*Table, error
 		closed:     make(chan struct{}),
 		rand:       mrand.New(mrand.NewSource(0)),
 		ips:        netutil.DistinctNetSet{Subnet: tableSubnet, Limit: tableIPLimit},
+		log:        log,
 	}
 	if err := tab.setFallbackNodes(bootnodes); err != nil {
 		return nil, err
@@ -112,7 +115,7 @@ func (tab *Table) self() *enode.Node {
 
 func (tab *Table) seedRand() {
 	var b [8]byte
-	crand.Read(b[:])
+	_, _ = crand.Read(b[:])
 
 	tab.mutex.Lock()
 	tab.rand.Seed(int64(binary.BigEndian.Uint64(b[:])))
@@ -286,9 +289,7 @@ func (tab *Table) loadSeedNodes() {
 	seeds = append(seeds, tab.nursery...)
 	for i := range seeds {
 		seed := seeds[i]
-		// TODO: wang log.Lazy
-		//age := time.Since(tab.db.LastPongReceived(seed.ID(), seed.IP()))
-		//log.Debug("Found seed node in database", "id", seed.ID(), "addr", seed.addr(), "age", age)
+		tab.log.Debug("Found seed node in database", "id", seed.ID(), "addr", seed.addr())
 		tab.addSeenNode(seed)
 	}
 }
@@ -311,7 +312,7 @@ func (tab *Table) doRevalidate(done chan<- struct{}) {
 	if last.Seq() < remoteSeq {
 		n, err := tab.net.RequestENR(unwrapNode(last))
 		if err != nil {
-			log.Debug("ENR request failed", "id", last.ID(), "addr", last.addr(), "err", err)
+			tab.log.Debug("ENR request failed", "id", last.ID(), "addr", last.addr(), "err", err)
 		} else {
 			last = &node{Node: *n, addedAt: last.addedAt, livenessChecks: last.livenessChecks}
 		}
@@ -323,16 +324,16 @@ func (tab *Table) doRevalidate(done chan<- struct{}) {
 	if err == nil {
 		// The node responded, move it to the front.
 		last.livenessChecks++
-		log.Debug("Revalidated node", "b", bi, "id", last.ID(), "checks", last.livenessChecks)
+		tab.log.Debug("Revalidated node", "b", bi, "id", last.ID(), "checks", last.livenessChecks)
 		tab.bumpInBucket(b, last)
 		return
 	}
 	// No reply received, pick a replacement or delete the node if there aren't
 	// any replacements.
 	if r := tab.replace(b, last); r != nil {
-		log.Debug("Replaced dead node", "b", bi, "id", last.ID(), "ip", last.IP(), "checks", last.livenessChecks, "r", r.ID(), "rip", r.IP())
+		//tab.log.Debug("Replaced dead node", "b", bi, "id", last.ID(), "ip", last.IP(), "checks", last.livenessChecks, "r", r.ID(), "rip", r.IP())
 	} else {
-		log.Debug("Removed dead node", "b", bi, "id", last.ID(), "ip", last.IP(), "checks", last.livenessChecks)
+		//tab.log.Debug("Removed dead node", "b", bi, "id", last.ID(), "ip", last.IP(), "checks", last.livenessChecks)
 	}
 }
 
@@ -359,7 +360,7 @@ func (tab *Table) nextRevalidateTime() time.Duration {
 }
 
 // copyLiveNodes adds nodes from the table to the database if they have been in the table
-// longer then minTableTime.
+// longer than seedMinTableTime.
 func (tab *Table) copyLiveNodes() {
 	tab.mutex.Lock()
 	defer tab.mutex.Unlock()
@@ -368,28 +369,41 @@ func (tab *Table) copyLiveNodes() {
 	for _, b := range &tab.buckets {
 		for _, n := range b.entries {
 			if n.livenessChecks > 0 && now.Sub(n.addedAt) >= seedMinTableTime {
-				tab.db.UpdateNode(unwrapNode(n))
+				_ = tab.db.UpdateNode(unwrapNode(n))
 			}
 		}
 	}
 }
 
-// closest returns the n nodes in the table that are closest to the
-// given id. The caller must hold tab.mutex.
-func (tab *Table) closest(target enode.ID, nresults int, checklive bool) *nodesByDistance {
-	// This is a very wasteful way to find the closest nodes but
-	// obviously correct. I believe that tree-based buckets would make
-	// this easier to implement efficiently.
-	close := &nodesByDistance{target: target}
+// findnodeByID returns the n nodes in the table that are closest to the given id.
+// This is used by the FINDNODE/v4 handler.
+//
+// The preferLive parameter says whether the caller wants liveness-checked results. If
+// preferLive is true and the table contains any verified nodes, the result will not
+// contain unverified nodes. However, if there are no verified nodes at all, the result
+// will contain unverified nodes.
+func (tab *Table) findnodeByID(target enode.ID, nresults int, preferLive bool) *nodesByDistance {
+	tab.mutex.Lock()
+	defer tab.mutex.Unlock()
+
+	// Scan all buckets. There might be a better way to do this, but there aren't that many
+	// buckets, so this solution should be fine. The worst-case complexity of this loop
+	// is O(tab.len() * nresults).
+	nodes := &nodesByDistance{target: target}
+	liveNodes := &nodesByDistance{target: target}
 	for _, b := range &tab.buckets {
 		for _, n := range b.entries {
-			if checklive && n.livenessChecks == 0 {
-				continue
+			nodes.push(n, nresults)
+			if preferLive && n.livenessChecks > 0 {
+				liveNodes.push(n, nresults)
 			}
-			close.push(n, nresults)
 		}
 	}
-	return close
+
+	if preferLive && len(liveNodes.entries) > 0 {
+		return liveNodes
+	}
+	return nodes
 }
 
 // len returns the number of nodes in the table.
@@ -403,9 +417,21 @@ func (tab *Table) len() (n int) {
 	return n
 }
 
+// bucketLen returns the number of nodes in the bucket for the given ID.
+func (tab *Table) bucketLen(id enode.ID) int {
+	tab.mutex.Lock()
+	defer tab.mutex.Unlock()
+
+	return len(tab.bucket(id).entries)
+}
+
 // bucket returns the bucket for the given node ID hash.
 func (tab *Table) bucket(id enode.ID) *bucket {
 	d := enode.LogDist(tab.self().ID(), id)
+	return tab.bucketAtDistance(d)
+}
+
+func (tab *Table) bucketAtDistance(d int) *bucket {
 	if d <= bucketMinDistance {
 		return tab.buckets[0]
 	}
@@ -498,15 +524,18 @@ func (tab *Table) delete(node *node) {
 }
 
 func (tab *Table) addIP(b *bucket, ip net.IP) bool {
+	if len(ip) == 0 {
+		return false // Nodes without IP cannot be added.
+	}
 	if netutil.IsLAN(ip) {
 		return true
 	}
 	if !tab.ips.Add(ip) {
-		log.Debug("IP exceeds table limit", "ip", ip)
+		tab.log.Debug("IP exceeds table limit", "ip", ip)
 		return false
 	}
 	if !b.ips.Add(ip) {
-		log.Debug("IP exceeds bucket limit", "ip", ip)
+		tab.log.Debug("IP exceeds bucket limit", "ip", ip)
 		tab.ips.Remove(ip)
 		return false
 	}

@@ -3,20 +3,16 @@ package clique
 import (
 	"bytes"
 	"crypto/ecdsa"
-
-	"testing"
-
-	"github.com/entropyio/go-entropy/blockchain/genesis"
-
+	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
-
-	"github.com/entropyio/go-entropy/blockchain"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/config"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/evm"
+	"math/big"
 	"sort"
+	"testing"
 )
 
 // testerAccountPool is a pool to maintain currently active tester accounts,
@@ -45,7 +41,7 @@ func (ap *testerAccountPool) checkpoint(header *model.Header, signers []string) 
 	}
 }
 
-// address retrieves the Ethereum address of a tester account by label, creating
+// address retrieves the Entropy address of a tester account by label, creating
 // a new account if no previous one exists yet.
 func (ap *testerAccountPool) address(account string) common.Address {
 	// Return the zero account for non-addresses
@@ -381,15 +377,16 @@ func TestClique(t *testing.T) {
 			}
 		}
 		// Create the genesis block with the initial set of signers
-		genesisObj := &genesis.Genesis{
+		genesis := &blockchain.Genesis{
 			ExtraData: make([]byte, extraVanity+common.AddressLength*len(signers)+extraSeal),
+			BaseFee:   big.NewInt(config.InitialBaseFee),
 		}
 		for j, signer := range signers {
-			copy(genesisObj.ExtraData[extraVanity+j*common.AddressLength:], signer[:])
+			copy(genesis.ExtraData[extraVanity+j*common.AddressLength:], signer[:])
 		}
 		// Create a pristine blockchain with the genesis injected
-		db := mapper.NewMemoryDatabase()
-		genesisObj.Commit(db)
+		db := rawdb.NewMemoryDatabase()
+		_, _ = genesis.Commit(db)
 
 		// Assemble a chain of headers from the cast votes
 		configObj := *config.TestChainConfig
@@ -400,7 +397,7 @@ func TestClique(t *testing.T) {
 		engine := New(configObj.Clique, db)
 		engine.fakeDiff = true
 
-		blocks, _ := blockchain.GenerateChain(&configObj, genesisObj.ToBlock(db), engine, db, len(tt.votes), func(j int, gen *blockchain.BlockGen) {
+		blocks, _ := blockchain.GenerateChain(&configObj, genesis.ToBlock(db), engine, db, len(tt.votes), func(j int, gen *blockchain.BlockGen) {
 			// Cast the vote contained in this block
 			gen.SetCoinbase(accounts.address(tt.votes[j].voted))
 			if tt.votes[j].auth {
@@ -411,7 +408,7 @@ func TestClique(t *testing.T) {
 		})
 		// Iterate through the blocks and seal them individually
 		for j, block := range blocks {
-			// Geth the header and prepare it for signing
+			// Get the header and prepare it for signing
 			header := block.Header()
 			if j > 0 {
 				header.ParentHash = blocks[j-1].Hash()
@@ -436,7 +433,7 @@ func TestClique(t *testing.T) {
 			batches[len(batches)-1] = append(batches[len(batches)-1], block)
 		}
 		// Pass all the headers through clique and ensure tallying succeeds
-		chain, err := blockchain.NewBlockChain(db, nil, &configObj, engine, evm.Config{}, nil)
+		chain, err := blockchain.NewBlockChain(db, nil, &configObj, engine, evm.Config{}, nil, nil)
 		if err != nil {
 			t.Errorf("test %d: failed to create test chain: %v", i, err)
 			continue

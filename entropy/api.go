@@ -5,85 +5,62 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"math/big"
-	"os"
-	"strings"
-
 	"github.com/entropyio/go-entropy/blockchain"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/hexutil"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/database/trie"
 	"github.com/entropyio/go-entropy/entropy/entropyapi"
 	"github.com/entropyio/go-entropy/rpc"
+	"io"
+	"math/big"
+	"os"
 	"runtime"
+	"strings"
 	"time"
 )
 
-// PublicEntropyAPI provides an API to access Entropy full node-related
-// information.
-type PublicEntropyAPI struct {
+// EntropyAPI provides an API to access Entropy full node-related information.
+type EntropyAPI struct {
 	e *Entropy
 }
 
-// NewPublicEntropyAPI creates a new Entropy protocol API for full nodes.
-func NewPublicEntropyAPI(e *Entropy) *PublicEntropyAPI {
-	return &PublicEntropyAPI{e}
+// NewEntropyAPI creates a new Entropy protocol API for full nodes.
+func NewEntropyAPI(e *Entropy) *EntropyAPI {
+	return &EntropyAPI{e}
 }
 
-// EntropyBase is the address that mining rewards will be send to
-func (api *PublicEntropyAPI) EntropyBase() (common.Address, error) {
+// Etherbase is the address that mining rewards will be send to.
+func (api *EntropyAPI) EntropyBase() (common.Address, error) {
 	return api.e.EntropyBase()
 }
 
-// Coinbase is the address that mining rewards will be send to (alias for EntropyBase)
-func (api *PublicEntropyAPI) Coinbase() (common.Address, error) {
+// Coinbase is the address that mining rewards will be send to (alias for EntropyBase).
+func (api *EntropyAPI) Coinbase() (common.Address, error) {
 	return api.EntropyBase()
 }
 
-// Hashrate returns the POW hashrate
-func (api *PublicEntropyAPI) Hashrate() hexutil.Uint64 {
-	return hexutil.Uint64(api.e.Miner().HashRate())
-}
-
-// ChainId is the EIP-155 replay-protection chain id for the current ethereum chain config.
-func (api *PublicEntropyAPI) ChainId() hexutil.Uint64 {
-	chainID := new(big.Int)
-	if config := api.e.blockchain.Config(); config.IsEIP155(api.e.blockchain.CurrentBlock().Number()) {
-		chainID = config.ChainID
-	}
-	return (hexutil.Uint64)(chainID.Uint64())
-}
-
-// PublicMinerAPI provides an API to control the miner.
-// It offers only methods that operate on data that pose no security risk when it is publicly accessible.
-type PublicMinerAPI struct {
-	e *Entropy
-}
-
-// NewPublicMinerAPI create a new PublicMinerAPI instance.
-func NewPublicMinerAPI(e *Entropy) *PublicMinerAPI {
-	return &PublicMinerAPI{e}
+// Hashrate returns the POW hashrate.
+func (api *EntropyAPI) Hashrate() hexutil.Uint64 {
+	return hexutil.Uint64(api.e.Miner().Hashrate())
 }
 
 // Mining returns an indication if this node is currently mining.
-func (api *PublicMinerAPI) Mining() bool {
+func (api *EntropyAPI) Mining() bool {
 	return api.e.IsMining()
 }
 
-// PrivateMinerAPI provides private RPC methods to control the miner.
-// These methods can be abused by external users and must be considered insecure for use by untrusted users.
-type PrivateMinerAPI struct {
+// MinerAPI provides an API to control the miner.
+type MinerAPI struct {
 	e *Entropy
 }
 
-// NewPrivateMinerAPI create a new RPC service which controls the miner of this node.
-func NewPrivateMinerAPI(e *Entropy) *PrivateMinerAPI {
-	return &PrivateMinerAPI{e: e}
+// NewMinerAPI create a new MinerAPI instance.
+func NewMinerAPI(e *Entropy) *MinerAPI {
+	return &MinerAPI{e}
 }
 
 // Start starts the miner with the given number of threads. If threads is nil,
@@ -91,7 +68,7 @@ func NewPrivateMinerAPI(e *Entropy) *PrivateMinerAPI {
 // usable by this process. If mining is already running, this method adjust the
 // number of threads allowed to use and updates the minimum price required by the
 // transaction pool.
-func (api *PrivateMinerAPI) Start(threads *int) error {
+func (api *MinerAPI) Start(threads *int) error {
 	if threads == nil {
 		return api.e.StartMining(runtime.NumCPU())
 	}
@@ -100,12 +77,12 @@ func (api *PrivateMinerAPI) Start(threads *int) error {
 
 // Stop terminates the miner, both at the consensus engine level as well as at
 // the block creation level.
-func (api *PrivateMinerAPI) Stop() {
+func (api *MinerAPI) Stop() {
 	api.e.StopMining()
 }
 
 // SetExtra sets the extra data string that is included when this miner mines a block.
-func (api *PrivateMinerAPI) SetExtra(extra string) (bool, error) {
+func (api *MinerAPI) SetExtra(extra string) (bool, error) {
 	if err := api.e.Miner().SetExtra([]byte(extra)); err != nil {
 		return false, err
 	}
@@ -113,7 +90,7 @@ func (api *PrivateMinerAPI) SetExtra(extra string) (bool, error) {
 }
 
 // SetGasPrice sets the minimum accepted gas price for the miner.
-func (api *PrivateMinerAPI) SetGasPrice(gasPrice hexutil.Big) bool {
+func (api *MinerAPI) SetGasPrice(gasPrice hexutil.Big) bool {
 	api.e.lock.Lock()
 	api.e.gasPrice = (*big.Int)(&gasPrice)
 	api.e.lock.Unlock()
@@ -122,37 +99,37 @@ func (api *PrivateMinerAPI) SetGasPrice(gasPrice hexutil.Big) bool {
 	return true
 }
 
-// SetEntropyBase sets the entropyBase of the miner
-func (api *PrivateMinerAPI) SetEntropyBase(entropyBase common.Address) bool {
+// SetGasLimit sets the gaslimit to target towards during mining.
+func (api *MinerAPI) SetGasLimit(gasLimit hexutil.Uint64) bool {
+	api.e.Miner().SetGasCeil(uint64(gasLimit))
+	return true
+}
+
+// SetEntropyBase sets the etherbase of the miner.
+func (api *MinerAPI) SetEntropyBase(entropyBase common.Address) bool {
 	api.e.SetEntropyBase(entropyBase)
 	return true
 }
 
 // SetRecommitInterval updates the interval for miner sealing work recommitting.
-func (api *PrivateMinerAPI) SetRecommitInterval(interval int) {
+func (api *MinerAPI) SetRecommitInterval(interval int) {
 	api.e.Miner().SetRecommitInterval(time.Duration(interval) * time.Millisecond)
 }
 
-// GetHashrate returns the current hashrate of the miner.
-func (api *PrivateMinerAPI) GetHashrate() uint64 {
-	return api.e.miner.HashRate()
-}
-
-// PrivateAdminAPI is the collection of Entropy full node-related APIs
-// exposed over the private admin endpoint.
-type PrivateAdminAPI struct {
+// AdminAPI is the collection of Entropy full node related APIs for node
+// administration.
+type AdminAPI struct {
 	entropy *Entropy
 }
 
-// NewPrivateAdminAPI creates a new API definition for the full node private
-// admin methods of the Entropy service.
-func NewPrivateAdminAPI(entropy *Entropy) *PrivateAdminAPI {
-	return &PrivateAdminAPI{entropy: entropy}
+// NewAdminAPI creates a new instance of AdminAPI.
+func NewAdminAPI(entropy *Entropy) *AdminAPI {
+	return &AdminAPI{entropy: entropy}
 }
 
 // ExportChain exports the current blockchain into a local file,
-// or a range of blocks if first and last are non-nil
-func (api *PrivateAdminAPI) ExportChain(file string, first *uint64, last *uint64) (bool, error) {
+// or a range of blocks if first and last are non-nil.
+func (api *AdminAPI) ExportChain(file string, first *uint64, last *uint64) (bool, error) {
 	if first == nil && last != nil {
 		return false, errors.New("last cannot be specified without first")
 	}
@@ -161,7 +138,7 @@ func (api *PrivateAdminAPI) ExportChain(file string, first *uint64, last *uint64
 		last = &head
 	}
 	if _, err := os.Stat(file); err == nil {
-		// File already exists. Allowing overwrite could be a DoS vecotor,
+		// File already exists. Allowing overwrite could be a DoS vector,
 		// since the 'file' may point to arbitrary paths on the drive
 		return false, errors.New("location would overwrite an existing file")
 	}
@@ -200,7 +177,7 @@ func hasAllBlocks(chain *blockchain.BlockChain, bs []*model.Block) bool {
 }
 
 // ImportChain imports a blockchain from a local file.
-func (api *PrivateAdminAPI) ImportChain(file string) (bool, error) {
+func (api *AdminAPI) ImportChain(file string) (bool, error) {
 	// Make sure the can access the file to import
 	in, err := os.Open(file)
 	if err != nil {
@@ -216,7 +193,7 @@ func (api *PrivateAdminAPI) ImportChain(file string) (bool, error) {
 	}
 
 	// Run actual the import in pre-configured batches
-	stream := rlputil.NewStream(reader, 0)
+	stream := rlp.NewStream(reader, 0)
 
 	blocks, index := make([]*model.Block, 0, 2500), 0
 	for batch := 0; ; batch++ {
@@ -248,30 +225,35 @@ func (api *PrivateAdminAPI) ImportChain(file string) (bool, error) {
 	return true, nil
 }
 
-// PublicDebugAPI is the collection of Entropy full node APIs exposed
-// over the public debugging endpoint.
-type PublicDebugAPI struct {
+// DebugAPI is the collection of Entropy full node APIs for debugging the
+// protocol.
+type DebugAPI struct {
 	entropy *Entropy
 }
 
-// NewPublicDebugAPI creates a new API definition for the full node-
-// related public debug methods of the Entropy service.
-func NewPublicDebugAPI(entropy *Entropy) *PublicDebugAPI {
-	return &PublicDebugAPI{entropy: entropy}
+// NewDebugAPI creates a new DebugAPI instance.
+func NewDebugAPI(entropy *Entropy) *DebugAPI {
+	return &DebugAPI{entropy: entropy}
 }
 
 // DumpBlock retrieves the entire state of the database at a given block.
-func (api *PublicDebugAPI) DumpBlock(blockNr rpc.BlockNumber) (state.Dump, error) {
+func (api *DebugAPI) DumpBlock(blockNr rpc.BlockNumber) (state.Dump, error) {
+	opts := &state.DumpConfig{
+		OnlyWithAddresses: true,
+		Max:               AccountRangeMaxResults, // Sanity limit over RPC
+	}
 	if blockNr == rpc.PendingBlockNumber {
 		// If we're dumping the pending state, we need to request
 		// both the pending block as well as the pending state from
 		// the miner and operate on those
 		_, stateDb := api.entropy.miner.Pending()
-		return stateDb.RawDump(false, false, true), nil
+		return stateDb.RawDump(opts), nil
 	}
 	var block *model.Block
 	if blockNr == rpc.LatestBlockNumber {
 		block = api.entropy.blockchain.CurrentBlock()
+	} else if blockNr == rpc.FinalizedBlockNumber {
+		block = api.entropy.blockchain.CurrentFinalizedBlock()
 	} else {
 		block = api.entropy.blockchain.GetBlockByNumber(uint64(blockNr))
 	}
@@ -282,24 +264,12 @@ func (api *PublicDebugAPI) DumpBlock(blockNr rpc.BlockNumber) (state.Dump, error
 	if err != nil {
 		return state.Dump{}, err
 	}
-	return stateDb.RawDump(false, false, true), nil
-}
-
-// PrivateDebugAPI is the collection of Entropy full node APIs exposed over
-// the private debugging endpoint.
-type PrivateDebugAPI struct {
-	entropy *Entropy
-}
-
-// NewPrivateDebugAPI creates a new API definition for the full node-related
-// private debug methods of the Entropy service.
-func NewPrivateDebugAPI(entropy *Entropy) *PrivateDebugAPI {
-	return &PrivateDebugAPI{entropy: entropy}
+	return stateDb.RawDump(opts), nil
 }
 
 // Preimage is a debug API function that returns the preimage for a sha3 hash, if known.
-func (api *PrivateDebugAPI) Preimage(ctx context.Context, hash common.Hash) (hexutil.Bytes, error) {
-	if preimage := mapper.ReadPreimage(api.entropy.ChainDb(), hash); preimage != nil {
+func (api *DebugAPI) Preimage(ctx context.Context, hash common.Hash) (hexutil.Bytes, error) {
+	if preimage := rawdb.ReadPreimage(api.entropy.ChainDb(), hash); preimage != nil {
 		return preimage, nil
 	}
 	return nil, errors.New("unknown preimage")
@@ -309,96 +279,94 @@ func (api *PrivateDebugAPI) Preimage(ctx context.Context, hash common.Hash) (hex
 type BadBlockArgs struct {
 	Hash  common.Hash            `json:"hash"`
 	Block map[string]interface{} `json:"block"`
-	RLP   string                 `json:"rlputil"`
+	RLP   string                 `json:"rlp"`
 }
 
 // GetBadBlocks returns a list of the last 'bad blocks' that the client has seen on the network
-// and returns them as a JSON list of block-hashes
-func (api *PrivateDebugAPI) GetBadBlocks(ctx context.Context) ([]*BadBlockArgs, error) {
-	blocks := api.entropy.BlockChain().BadBlocks()
-	results := make([]*BadBlockArgs, len(blocks))
-
-	var err error
-	for i, block := range blocks {
-		results[i] = &BadBlockArgs{
-			Hash: block.Hash(),
-		}
-		if rlpBytes, err := rlputil.EncodeToBytes(block); err != nil {
-			results[i].RLP = err.Error() // Hacky, but hey, it works
+// and returns them as a JSON list of block hashes.
+func (api *DebugAPI) GetBadBlocks(ctx context.Context) ([]*BadBlockArgs, error) {
+	var (
+		err     error
+		blocks  = rawdb.ReadAllBadBlocks(api.entropy.chainDb)
+		results = make([]*BadBlockArgs, 0, len(blocks))
+	)
+	for _, block := range blocks {
+		var (
+			blockRlp  string
+			blockJSON map[string]interface{}
+		)
+		if rlpBytes, err := rlp.EncodeToBytes(block); err != nil {
+			blockRlp = err.Error() // Hacky, but hey, it works
 		} else {
-			results[i].RLP = fmt.Sprintf("0x%x", rlpBytes)
+			blockRlp = fmt.Sprintf("0x%x", rlpBytes)
 		}
-		if results[i].Block, err = entropyapi.RPCMarshalBlock(block, true, true); err != nil {
-			results[i].Block = map[string]interface{}{"error": err.Error()}
+		if blockJSON, err = entropyapi.RPCMarshalBlock(block, true, true, api.entropy.APIBackend.ChainConfig()); err != nil {
+			blockJSON = map[string]interface{}{"error": err.Error()}
 		}
+		results = append(results, &BadBlockArgs{
+			Hash:  block.Hash(),
+			RLP:   blockRlp,
+			Block: blockJSON,
+		})
 	}
 	return results, nil
-}
-
-// AccountRangeResult returns a mapping from the hash of an account addresses
-// to its preimage. It will return the JSON null if no preimage is found.
-// Since a query can return a limited amount of results, a "next" field is
-// also present for paging.
-type AccountRangeResult struct {
-	Accounts map[common.Hash]*common.Address `json:"accounts"`
-	Next     common.Hash                     `json:"next"`
-}
-
-func accountRange(st state.Trie, start *common.Hash, maxResults int) (AccountRangeResult, error) {
-	if start == nil {
-		start = &common.Hash{0}
-	}
-	it := trie.NewIterator(st.NodeIterator(start.Bytes()))
-	result := AccountRangeResult{Accounts: make(map[common.Hash]*common.Address), Next: common.Hash{}}
-
-	if maxResults > AccountRangeMaxResults {
-		maxResults = AccountRangeMaxResults
-	}
-
-	for i := 0; i < maxResults && it.Next(); i++ {
-		if preimage := st.GetKey(it.Key); preimage != nil {
-			addr := &common.Address{}
-			addr.SetBytes(preimage)
-			result.Accounts[common.BytesToHash(it.Key)] = addr
-		} else {
-			result.Accounts[common.BytesToHash(it.Key)] = nil
-		}
-	}
-
-	if it.Next() {
-		result.Next = common.BytesToHash(it.Key)
-	}
-
-	return result, nil
 }
 
 // AccountRangeMaxResults is the maximum number of results to be returned per call
 const AccountRangeMaxResults = 256
 
-// AccountRange enumerates all accounts in the latest state
-func (api *PrivateDebugAPI) AccountRange(ctx context.Context, start *common.Hash, maxResults int) (AccountRangeResult, error) {
-	var statedb *state.StateDB
+// AccountRange enumerates all accounts in the given block and start point in paging request
+func (api *DebugAPI) AccountRange(blockNrOrHash rpc.BlockNumberOrHash, start hexutil.Bytes, maxResults int, nocode, nostorage, incompletes bool) (state.IteratorDump, error) {
+	var stateDb *state.StateDB
 	var err error
-	block := api.entropy.blockchain.CurrentBlock()
 
-	if len(block.Transactions()) == 0 {
-		statedb, err = api.computeStateDB(block, defaultTraceReexec)
+	if number, ok := blockNrOrHash.Number(); ok {
+		if number == rpc.PendingBlockNumber {
+			// If we're dumping the pending state, we need to request
+			// both the pending block as well as the pending state from
+			// the miner and operate on those
+			_, stateDb = api.entropy.miner.Pending()
+		} else {
+			var block *model.Block
+			if number == rpc.LatestBlockNumber {
+				block = api.entropy.blockchain.CurrentBlock()
+			} else if number == rpc.FinalizedBlockNumber {
+				block = api.entropy.blockchain.CurrentFinalizedBlock()
+			} else {
+				block = api.entropy.blockchain.GetBlockByNumber(uint64(number))
+			}
+			if block == nil {
+				return state.IteratorDump{}, fmt.Errorf("block #%d not found", number)
+			}
+			stateDb, err = api.entropy.BlockChain().StateAt(block.Root())
+			if err != nil {
+				return state.IteratorDump{}, err
+			}
+		}
+	} else if hash, ok := blockNrOrHash.Hash(); ok {
+		block := api.entropy.blockchain.GetBlockByHash(hash)
+		if block == nil {
+			return state.IteratorDump{}, fmt.Errorf("block %s not found", hash.Hex())
+		}
+		stateDb, err = api.entropy.BlockChain().StateAt(block.Root())
 		if err != nil {
-			return AccountRangeResult{}, err
+			return state.IteratorDump{}, err
 		}
 	} else {
-		_, _, statedb, err = api.computeTxEnv(block.Hash(), len(block.Transactions())-1, 0)
-		if err != nil {
-			return AccountRangeResult{}, err
-		}
+		return state.IteratorDump{}, errors.New("either block number or block hash must be specified")
 	}
 
-	trie, err := statedb.Database().OpenTrie(block.Header().Root)
-	if err != nil {
-		return AccountRangeResult{}, err
+	opts := &state.DumpConfig{
+		SkipCode:          nocode,
+		SkipStorage:       nostorage,
+		OnlyWithAddresses: !incompletes,
+		Start:             start,
+		Max:               uint64(maxResults),
 	}
-
-	return accountRange(trie, start, maxResults)
+	if maxResults > AccountRangeMaxResults || maxResults <= 0 {
+		opts.Max = AccountRangeMaxResults
+	}
+	return stateDb.IteratorDump(opts), nil
 }
 
 // StorageRangeResult is the result of a debug_storageRangeAt API call.
@@ -415,8 +383,13 @@ type storageEntry struct {
 }
 
 // StorageRangeAt returns the storage at the given block height and transaction index.
-func (api *PrivateDebugAPI) StorageRangeAt(ctx context.Context, blockHash common.Hash, txIndex int, contractAddress common.Address, keyStart hexutil.Bytes, maxResult int) (StorageRangeResult, error) {
-	_, _, statedb, err := api.computeTxEnv(blockHash, txIndex, 0)
+func (api *DebugAPI) StorageRangeAt(blockHash common.Hash, txIndex int, contractAddress common.Address, keyStart hexutil.Bytes, maxResult int) (StorageRangeResult, error) {
+	// Retrieve the block
+	block := api.entropy.blockchain.GetBlockByHash(blockHash)
+	if block == nil {
+		return StorageRangeResult{}, fmt.Errorf("block %#x not found", blockHash)
+	}
+	_, _, statedb, err := api.entropy.stateAtTransaction(block, txIndex, 0)
 	if err != nil {
 		return StorageRangeResult{}, err
 	}
@@ -431,7 +404,7 @@ func storageRangeAt(st state.Trie, start []byte, maxResult int) (StorageRangeRes
 	it := trie.NewIterator(st.NodeIterator(start))
 	result := StorageRangeResult{Storage: storageMap{}}
 	for i := 0; i < maxResult && it.Next(); i++ {
-		_, content, _, err := rlputil.Split(it.Value)
+		_, content, _, err := rlp.Split(it.Value)
 		if err != nil {
 			return StorageRangeResult{}, err
 		}
@@ -450,12 +423,12 @@ func storageRangeAt(st state.Trie, start []byte, maxResult int) (StorageRangeRes
 	return result, nil
 }
 
-// GetModifiedAccountsByNumber returns all account that have changed between the
+// GetModifiedAccountsByNumber returns all accounts that have changed between the
 // two blocks specified. A change is defined as a difference in nonce, balance,
 // code hash, or storage hash.
 //
-// With one parameter, returns the list of account modified in the specified block.
-func (api *PrivateDebugAPI) GetModifiedAccountsByNumber(startNum uint64, endNum *uint64) ([]common.Address, error) {
+// With one parameter, returns the list of accounts modified in the specified block.
+func (api *DebugAPI) GetModifiedAccountsByNumber(startNum uint64, endNum *uint64) ([]common.Address, error) {
 	var startBlock, endBlock *model.Block
 
 	startBlock = api.entropy.blockchain.GetBlockByNumber(startNum)
@@ -478,12 +451,12 @@ func (api *PrivateDebugAPI) GetModifiedAccountsByNumber(startNum uint64, endNum 
 	return api.getModifiedAccounts(startBlock, endBlock)
 }
 
-// GetModifiedAccountsByHash returns all account that have changed between the
+// GetModifiedAccountsByHash returns all accounts that have changed between the
 // two blocks specified. A change is defined as a difference in nonce, balance,
 // code hash, or storage hash.
 //
-// With one parameter, returns the list of account modified in the specified block.
-func (api *PrivateDebugAPI) GetModifiedAccountsByHash(startHash common.Hash, endHash *common.Hash) ([]common.Address, error) {
+// With one parameter, returns the list of accounts modified in the specified block.
+func (api *DebugAPI) GetModifiedAccountsByHash(startHash common.Hash, endHash *common.Hash) ([]common.Address, error) {
 	var startBlock, endBlock *model.Block
 	startBlock = api.entropy.blockchain.GetBlockByHash(startHash)
 	if startBlock == nil {
@@ -505,17 +478,17 @@ func (api *PrivateDebugAPI) GetModifiedAccountsByHash(startHash common.Hash, end
 	return api.getModifiedAccounts(startBlock, endBlock)
 }
 
-func (api *PrivateDebugAPI) getModifiedAccounts(startBlock, endBlock *model.Block) ([]common.Address, error) {
+func (api *DebugAPI) getModifiedAccounts(startBlock, endBlock *model.Block) ([]common.Address, error) {
 	if startBlock.Number().Uint64() >= endBlock.Number().Uint64() {
 		return nil, fmt.Errorf("start block height (%d) must be less than end block height (%d)", startBlock.Number().Uint64(), endBlock.Number().Uint64())
 	}
 	triedb := api.entropy.BlockChain().StateCache().TrieDB()
 
-	oldTrie, err := trie.NewSecure(startBlock.Root(), triedb)
+	oldTrie, err := trie.NewSecure(common.Hash{}, startBlock.Root(), triedb)
 	if err != nil {
 		return nil, err
 	}
-	newTrie, err := trie.NewSecure(endBlock.Root(), triedb)
+	newTrie, err := trie.NewSecure(common.Hash{}, endBlock.Root(), triedb)
 	if err != nil {
 		return nil, err
 	}
@@ -531,4 +504,65 @@ func (api *PrivateDebugAPI) getModifiedAccounts(startBlock, endBlock *model.Bloc
 		dirty = append(dirty, common.BytesToAddress(key))
 	}
 	return dirty, nil
+}
+
+// GetAccessibleState returns the first number where the node has accessible
+// state on disk. Note this being the post-state of that block and the pre-state
+// of the next block.
+// The (from, to) parameters are the sequence of blocks to search, which can go
+// either forwards or backwards
+func (api *DebugAPI) GetAccessibleState(from, to rpc.BlockNumber) (uint64, error) {
+	db := api.entropy.ChainDb()
+	var pivot uint64
+	if p := rawdb.ReadLastPivotNumber(db); p != nil {
+		pivot = *p
+		log.Info("Found fast-sync pivot marker", "number", pivot)
+	}
+	var resolveNum = func(num rpc.BlockNumber) (uint64, error) {
+		// We don't have state for pending (-2), so treat it as latest
+		if num.Int64() < 0 {
+			block := api.entropy.blockchain.CurrentBlock()
+			if block == nil {
+				return 0, fmt.Errorf("current block missing")
+			}
+			return block.NumberU64(), nil
+		}
+		return uint64(num.Int64()), nil
+	}
+	var (
+		start   uint64
+		end     uint64
+		delta   = int64(1)
+		lastLog time.Time
+		err     error
+	)
+	if start, err = resolveNum(from); err != nil {
+		return 0, err
+	}
+	if end, err = resolveNum(to); err != nil {
+		return 0, err
+	}
+	if start == end {
+		return 0, fmt.Errorf("from and to needs to be different")
+	}
+	if start > end {
+		delta = -1
+	}
+	for i := int64(start); i != int64(end); i += delta {
+		if time.Since(lastLog) > 8*time.Second {
+			log.Info("Finding roots", "from", start, "to", end, "at", i)
+			lastLog = time.Now()
+		}
+		if i < int64(pivot) {
+			continue
+		}
+		h := api.entropy.BlockChain().GetHeaderByNumber(uint64(i))
+		if h == nil {
+			return 0, fmt.Errorf("missing header %d", i)
+		}
+		if ok, _ := api.entropy.ChainDb().Has(h.Root[:], "debug"); ok {
+			return uint64(i), nil
+		}
+	}
+	return 0, fmt.Errorf("no state found")
 }

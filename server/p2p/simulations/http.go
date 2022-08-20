@@ -5,21 +5,21 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/entropyio/go-entropy/event"
+	"github.com/entropyio/go-entropy/rpc"
+	"github.com/entropyio/go-entropy/server/p2p"
+	"github.com/entropyio/go-entropy/server/p2p/enode"
+	"github.com/entropyio/go-entropy/server/p2p/simulations/adapters"
+	"github.com/gorilla/websocket"
+	"github.com/julienschmidt/httprouter"
+	"html"
 	"io"
-	"io/ioutil"
 	"net/http"
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/entropyio/go-entropy/event"
-
-	"github.com/entropyio/go-entropy/rpc"
-	"github.com/entropyio/go-entropy/server/p2p"
-	"github.com/entropyio/go-entropy/server/p2p/enode"
-	"github.com/gorilla/websocket"
-	"github.com/julienschmidt/httprouter"
 )
 
 // DefaultClient is the default simulation API client which expects the API
@@ -95,7 +95,7 @@ func (c *Client) SubscribeNetwork(events chan *Event, opts SubscribeOpts) (event
 		return nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		response, _ := ioutil.ReadAll(res.Body)
+		response, _ := io.ReadAll(res.Body)
 		res.Body.Close()
 		return nil, fmt.Errorf("unexpected HTTP status: %s: %s", res.Status, response)
 	}
@@ -235,7 +235,7 @@ func (c *Client) Send(method, path string, in, out interface{}) error {
 	}
 	defer res.Body.Close()
 	if res.StatusCode != http.StatusOK && res.StatusCode != http.StatusCreated {
-		response, _ := ioutil.ReadAll(res.Body)
+		response, _ := io.ReadAll(res.Body)
 		return fmt.Errorf("unexpected HTTP status: %s: %s", res.Status, response)
 	}
 	if out != nil {
@@ -320,7 +320,7 @@ func (s *Server) StartMocker(w http.ResponseWriter, req *http.Request) {
 	mockerType := req.FormValue("mocker-type")
 	mockerFn := LookupMocker(mockerType)
 	if mockerFn == nil {
-		http.Error(w, fmt.Sprintf("unknown mocker type %q", mockerType), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("unknown mocker type %q", html.EscapeString(mockerType)), http.StatusBadRequest)
 		return
 	}
 	nodeCount, err := strconv.Atoi(req.FormValue("node-count"))
@@ -425,6 +425,7 @@ func (s *Server) StreamNetworkEvents(w http.ResponseWriter, req *http.Request) {
 			}
 		}
 		for _, conn := range snap.Conns {
+			conn := conn
 			event := NewEvent(&conn)
 			if err := writeEvent(event); err != nil {
 				writeErr(err)
@@ -543,7 +544,7 @@ func (s *Server) CreateNode(w http.ResponseWriter, req *http.Request) {
 	config := &adapters.NodeConfig{}
 
 	err := json.NewDecoder(req.Body).Decode(config)
-	if err != nil && err != io.EOF {
+	if err != nil && !errors.Is(err, io.EOF) {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -682,7 +683,7 @@ func (s *Server) JSON(w http.ResponseWriter, status int, data interface{}) {
 	json.NewEncoder(w).Encode(data)
 }
 
-// wrapHandler returns a httprouter.Handle which wraps a http.HandlerFunc by
+// wrapHandler returns an httprouter.Handle which wraps an http.HandlerFunc by
 // populating request.Context with any objects from the URL params
 func (s *Server) wrapHandler(handler http.HandlerFunc) httprouter.Handle {
 	return func(w http.ResponseWriter, req *http.Request, params httprouter.Params) {

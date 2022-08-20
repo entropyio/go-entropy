@@ -1,7 +1,6 @@
 package keystore
 
 import (
-	"io/ioutil"
 	"os"
 	"path/filepath"
 	"strings"
@@ -15,20 +14,20 @@ import (
 type fileCache struct {
 	all     mapset.Set // Set of all files from the keystore folder
 	lastMod time.Time  // Last time instance when a file was modified
-	mu      sync.RWMutex
+	mu      sync.Mutex
 }
 
 // scan performs a new scan on the given directory, compares against the already
 // cached filenames, and returns file sets: creates, deletes, updates.
 func (fc *fileCache) scan(keyDir string) (mapset.Set, mapset.Set, mapset.Set, error) {
-	//t0 := time.Now()
+	t0 := time.Now()
 
 	// List all the failes from the keystore folder
-	files, err := ioutil.ReadDir(keyDir)
+	files, err := os.ReadDir(keyDir)
 	if err != nil {
 		return nil, nil, nil, err
 	}
-	//t1 := time.Now()
+	t1 := time.Now()
 
 	fc.mu.Lock()
 	defer fc.mu.Unlock()
@@ -48,7 +47,11 @@ func (fc *fileCache) scan(keyDir string) (mapset.Set, mapset.Set, mapset.Set, er
 		// Gather the set of all and fresly modified files
 		all.Add(path)
 
-		modified := fi.ModTime()
+		info, err := fi.Info()
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		modified := info.ModTime()
 		if modified.After(fc.lastMod) {
 			mods.Add(path)
 		}
@@ -56,7 +59,7 @@ func (fc *fileCache) scan(keyDir string) (mapset.Set, mapset.Set, mapset.Set, er
 			newLastMod = modified
 		}
 	}
-	//t2 := time.Now()
+	t2 := time.Now()
 
 	// Update the tracked files and return the three sets
 	deletes := fc.all.Difference(all)   // Deletes = previous - current
@@ -64,21 +67,21 @@ func (fc *fileCache) scan(keyDir string) (mapset.Set, mapset.Set, mapset.Set, er
 	updates := mods.Difference(creates) // Updates = modified - creates
 
 	fc.all, fc.lastMod = all, newLastMod
-	//t3 := time.Now()
+	t3 := time.Now()
 
 	// Report on the scanning stats and return
-	//log.Debugf("scan account folder. list=%s, set=%s, diff=%s", t1.Sub(t0), t2.Sub(t1), t3.Sub(t2))
+	log.Debug("FS scan times", "list", t1.Sub(t0), "set", t2.Sub(t1), "diff", t3.Sub(t2))
 	return creates, deletes, updates, nil
 }
 
 // nonKeyFile ignores editor backups, hidden files and folders/symlinks.
-func nonKeyFile(fi os.FileInfo) bool {
+func nonKeyFile(fi os.DirEntry) bool {
 	// Skip editor backups and UNIX-style hidden files.
 	if strings.HasSuffix(fi.Name(), "~") || strings.HasPrefix(fi.Name(), ".") {
 		return true
 	}
 	// Skip misc special files, directories (yes, symlinks too).
-	if fi.IsDir() || fi.Mode()&os.ModeType != 0 {
+	if fi.IsDir() || !fi.Type().IsRegular() {
 		return true
 	}
 	return false

@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 	"github.com/entropyio/go-entropy/blockchain/bloombits"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/bitutil"
 	"github.com/entropyio/go-entropy/database"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/server/node"
 	"testing"
 	"time"
@@ -45,21 +45,22 @@ func BenchmarkBloomBits32k(b *testing.B) {
 const benchFilterCnt = 2000
 
 func benchmarkBloomBits(b *testing.B, sectionSize uint64) {
+	b.Skip("test disabled: this tests presume (and modify) an existing datadir.")
 	benchDataDir := node.DefaultDataDir() + "/geth/chaindata"
 	b.Log("Running bloombits benchmark   section size:", sectionSize)
 
-	db, err := mapper.NewLevelDBDatabase(benchDataDir, 128, 1024, "")
+	db, err := rawdb.NewLevelDBDatabase(benchDataDir, 128, 1024, "", false)
 	if err != nil {
 		b.Fatalf("error opening database at %v: %v", benchDataDir, err)
 	}
-	head := mapper.ReadHeadBlockHash(db)
+	head := rawdb.ReadHeadBlockHash(db)
 	if head == (common.Hash{}) {
 		b.Fatalf("chain data not found at %v", benchDataDir)
 	}
 
 	clearBloomBits(db)
 	b.Log("Generating bloombits data...")
-	headNum := mapper.ReadHeaderNumber(db, head)
+	headNum := rawdb.ReadHeaderNumber(db, head)
 	if headNum == nil || *headNum < sectionSize+512 {
 		b.Fatalf("not enough blocks for running a benchmark")
 	}
@@ -74,14 +75,14 @@ func benchmarkBloomBits(b *testing.B, sectionSize uint64) {
 		}
 		var header *model.Header
 		for i := sectionIdx * sectionSize; i < (sectionIdx+1)*sectionSize; i++ {
-			hash := mapper.ReadCanonicalHash(db, i)
-			header = mapper.ReadHeader(db, hash, i)
-			if header == nil {
+			hash := rawdb.ReadCanonicalHash(db, i)
+			if header = rawdb.ReadHeader(db, hash, i); header == nil {
 				b.Fatalf("Error creating bloomBits data")
+				return
 			}
 			bc.AddBloom(uint(i-sectionIdx*sectionSize), header.Bloom)
 		}
-		sectionHead := mapper.ReadCanonicalHash(db, (sectionIdx+1)*sectionSize-1)
+		sectionHead := rawdb.ReadCanonicalHash(db, (sectionIdx+1)*sectionSize-1)
 		for i := 0; i < model.BloomBitLength; i++ {
 			data, err := bc.Bitset(uint(i))
 			if err != nil {
@@ -90,7 +91,7 @@ func benchmarkBloomBits(b *testing.B, sectionSize uint64) {
 			comp := bitutil.CompressBytes(data)
 			dataSize += uint64(len(data))
 			compSize += uint64(len(comp))
-			mapper.WriteBloomBits(db, uint(i), sectionIdx, sectionHead, comp)
+			rawdb.WriteBloomBits(db, uint(i), sectionIdx, sectionHead, comp)
 		}
 		//if sectionIdx%50 == 0 {
 		//	b.Log(" section", sectionIdx, "/", cnt)
@@ -109,7 +110,7 @@ func benchmarkBloomBits(b *testing.B, sectionSize uint64) {
 	for i := 0; i < benchFilterCnt; i++ {
 		if i%20 == 0 {
 			db.Close()
-			db, _ = mapper.NewLevelDBDatabase(benchDataDir, 128, 1024, "")
+			db, _ = rawdb.NewLevelDBDatabase(benchDataDir, 128, 1024, "", false)
 			backend = &testBackend{db: db, sections: cnt}
 		}
 		var addr common.Address
@@ -123,32 +124,33 @@ func benchmarkBloomBits(b *testing.B, sectionSize uint64) {
 	d = time.Since(start)
 	b.Log("Finished running filter benchmarks")
 	b.Log(" ", d, "total  ", d/time.Duration(benchFilterCnt), "per address", d*time.Duration(1000000)/time.Duration(benchFilterCnt*cnt*sectionSize), "per million blocks")
-	db.Close()
+	_ = db.Close()
 }
 
-var bloomBitsPrefix = []byte("bloomBits-")
-
+//nolint:unused
 func clearBloomBits(db database.Database) {
+	var bloomBitsPrefix = []byte("bloomBits-")
 	fmt.Println("Clearing bloombits data...")
-	it := db.NewIteratorWithPrefix(bloomBitsPrefix)
+	it := db.NewIterator(bloomBitsPrefix, nil)
 	for it.Next() {
-		db.Delete(it.Key())
+		_ = db.Delete(it.Key())
 	}
 	it.Release()
 }
 
 func BenchmarkNoBloomBits(b *testing.B) {
+	b.Skip("test disabled: this tests presume (and modify) an existing datadir.")
 	benchDataDir := node.DefaultDataDir() + "/geth/chaindata"
 	b.Log("Running benchmark without bloombits")
-	db, err := mapper.NewLevelDBDatabase(benchDataDir, 128, 1024, "")
+	db, err := rawdb.NewLevelDBDatabase(benchDataDir, 128, 1024, "", false)
 	if err != nil {
 		b.Fatalf("error opening database at %v: %v", benchDataDir, err)
 	}
-	head := mapper.ReadHeadBlockHash(db)
+	head := rawdb.ReadHeadBlockHash(db)
 	if head == (common.Hash{}) {
 		b.Fatalf("chain data not found at %v", benchDataDir)
 	}
-	headNum := mapper.ReadHeaderNumber(db, head)
+	headNum := rawdb.ReadHeaderNumber(db, head)
 
 	clearBloomBits(db)
 

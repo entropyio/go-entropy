@@ -4,11 +4,10 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"github.com/entropyio/go-entropy/event"
 	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"io"
-	"io/ioutil"
 	"sync/atomic"
 	"time"
 )
@@ -34,9 +33,9 @@ type Msg struct {
 // Decode parses the RLP content of a message into
 // the given value, which must be a pointer.
 //
-// For the decoding rules, please see package rlputil.
+// For the decoding rules, please see package rlp.
 func (msg Msg) Decode(val interface{}) error {
-	s := rlputil.NewStream(msg.Payload, uint64(msg.Size))
+	s := rlp.NewStream(msg.Payload, uint64(msg.Size))
 	if err := s.Decode(val); err != nil {
 		return newPeerError(errInvalidMsg, "(code %x) (size %d) %v", msg.Code, msg.Size, err)
 	}
@@ -49,8 +48,12 @@ func (msg Msg) String() string {
 
 // Discard reads any remaining payload data into a black hole.
 func (msg Msg) Discard() error {
-	_, err := io.Copy(ioutil.Discard, msg.Payload)
+	_, err := io.Copy(io.Discard, msg.Payload)
 	return err
+}
+
+func (msg Msg) Time() time.Time {
+	return msg.ReceivedAt
 }
 
 type MsgReader interface {
@@ -77,7 +80,7 @@ type MsgReadWriter interface {
 // Send writes an RLP-encoded message with the given code.
 // data should encode as an RLP list.
 func Send(w MsgWriter, msgcode uint64, data interface{}) error {
-	size, r, err := rlputil.EncodeToReader(data)
+	size, r, err := rlp.EncodeToReader(data)
 	if err != nil {
 		return err
 	}
@@ -217,14 +220,14 @@ func ExpectMsg(r MsgReader, code uint64, content interface{}) error {
 	if content == nil {
 		return msg.Discard()
 	}
-	contentEnc, err := rlputil.EncodeToBytes(content)
+	contentEnc, err := rlp.EncodeToBytes(content)
 	if err != nil {
 		panic("content encode error: " + err.Error())
 	}
 	if int(msg.Size) != len(contentEnc) {
 		return fmt.Errorf("message size mismatch: got %d, want %d", msg.Size, len(contentEnc))
 	}
-	actualContent, err := ioutil.ReadAll(msg.Payload)
+	actualContent, err := io.ReadAll(msg.Payload)
 	if err != nil {
 		return err
 	}

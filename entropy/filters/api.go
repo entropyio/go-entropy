@@ -5,22 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math/big"
-	"sync"
-	"time"
-
 	"github.com/entropyio/go-entropy"
-
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/hexutil"
-	"github.com/entropyio/go-entropy/database"
-	"github.com/entropyio/go-entropy/event"
 	"github.com/entropyio/go-entropy/rpc"
-)
-
-var (
-	deadline = 5 * time.Minute // consider a filter inactive if it has not been polled for within deadline
+	"math/big"
+	"sync"
+	"time"
 )
 
 // filter is a helper struct that holds meta information over the filter type
@@ -34,48 +26,56 @@ type filter struct {
 	s        *Subscription // associated subscription in event system
 }
 
-// PublicFilterAPI offers support to create and manage filters. This will allow external clients to retrieve various
+// FilterAPI offers support to create and manage filters. This will allow external clients to retrieve various
 // information related to the Entropy protocol such als blocks, transactions and logs.
-type PublicFilterAPI struct {
+type FilterAPI struct {
 	backend   Backend
-	mux       *event.TypeMux
-	quit      chan struct{}
-	chainDb   database.Database
 	events    *EventSystem
 	filtersMu sync.Mutex
 	filters   map[rpc.ID]*filter
+	timeout   time.Duration
 }
 
-// NewPublicFilterAPI returns a new PublicFilterAPI instance.
-func NewPublicFilterAPI(backend Backend, lightMode bool) *PublicFilterAPI {
-	api := &PublicFilterAPI{
+// NewFilterAPI returns a new FilterAPI instance.
+func NewFilterAPI(backend Backend, lightMode bool, timeout time.Duration) *FilterAPI {
+	api := &FilterAPI{
 		backend: backend,
-		chainDb: backend.ChainDb(),
 		events:  NewEventSystem(backend, lightMode),
 		filters: make(map[rpc.ID]*filter),
+		timeout: timeout,
 	}
-	go api.timeoutLoop()
+	go api.timeoutLoop(timeout)
 
 	return api
 }
 
-// timeoutLoop runs every 5 minutes and deletes filters that have not been recently used.
-// Tt is started when the api is created.
-func (api *PublicFilterAPI) timeoutLoop() {
-	ticker := time.NewTicker(5 * time.Minute)
+// timeoutLoop runs at the interval set by 'timeout' and deletes filters
+// that have not been recently used. It is started when the API is created.
+func (api *FilterAPI) timeoutLoop(timeout time.Duration) {
+	var toUninstall []*Subscription
+	ticker := time.NewTicker(timeout)
+	defer ticker.Stop()
 	for {
 		<-ticker.C
 		api.filtersMu.Lock()
 		for id, f := range api.filters {
 			select {
 			case <-f.deadline.C:
-				f.s.Unsubscribe()
+				toUninstall = append(toUninstall, f.s)
 				delete(api.filters, id)
 			default:
 				continue
 			}
 		}
 		api.filtersMu.Unlock()
+
+		// Unsubscribes are processed outside the lock to avoid the following scenario:
+		// event loop attempts broadcasting events to still active filters while
+		// Unsubscribe is waiting for it to process the uninstall request.
+		for _, s := range toUninstall {
+			s.Unsubscribe()
+		}
+		toUninstall = nil
 	}
 }
 
@@ -86,14 +86,14 @@ func (api *PublicFilterAPI) timeoutLoop() {
 // `entropy_getFilterChanges` polling method that is also used for log filters.
 //
 // https://github.com/entropy/wiki/wiki/JSON-RPC#entropy_newpendingtransactionfilter
-func (api *PublicFilterAPI) NewPendingTransactionFilter() rpc.ID {
+func (api *FilterAPI) NewPendingTransactionFilter() rpc.ID {
 	var (
 		pendingTxs   = make(chan []common.Hash)
 		pendingTxSub = api.events.SubscribePendingTxs(pendingTxs)
 	)
 
 	api.filtersMu.Lock()
-	api.filters[pendingTxSub.ID] = &filter{typ: PendingTransactionsSubscription, deadline: time.NewTimer(deadline), hashes: make([]common.Hash, 0), s: pendingTxSub}
+	api.filters[pendingTxSub.ID] = &filter{typ: PendingTransactionsSubscription, deadline: time.NewTimer(api.timeout), hashes: make([]common.Hash, 0), s: pendingTxSub}
 	api.filtersMu.Unlock()
 
 	go func() {
@@ -119,7 +119,7 @@ func (api *PublicFilterAPI) NewPendingTransactionFilter() rpc.ID {
 
 // NewPendingTransactions creates a subscription that is triggered each time a transaction
 // enters the transaction pool and was signed from one of the transactions this nodes manages.
-func (api *PublicFilterAPI) NewPendingTransactions(ctx context.Context) (*rpc.Subscription, error) {
+func (api *FilterAPI) NewPendingTransactions(ctx context.Context) (*rpc.Subscription, error) {
 	notifier, supported := rpc.NotifierFromContext(ctx)
 	if !supported {
 		return &rpc.Subscription{}, rpc.ErrNotificationsUnsupported
@@ -154,16 +154,14 @@ func (api *PublicFilterAPI) NewPendingTransactions(ctx context.Context) (*rpc.Su
 
 // NewBlockFilter creates a filter that fetches blocks that are imported into the chain.
 // It is part of the filter package since polling goes with entropy_getFilterChanges.
-//
-// https://github.com/entropy/wiki/wiki/JSON-RPC#entropy_newblockfilter
-func (api *PublicFilterAPI) NewBlockFilter() rpc.ID {
+func (api *FilterAPI) NewBlockFilter() rpc.ID {
 	var (
 		headers   = make(chan *model.Header)
 		headerSub = api.events.SubscribeNewHeads(headers)
 	)
 
 	api.filtersMu.Lock()
-	api.filters[headerSub.ID] = &filter{typ: BlocksSubscription, deadline: time.NewTimer(deadline), hashes: make([]common.Hash, 0), s: headerSub}
+	api.filters[headerSub.ID] = &filter{typ: BlocksSubscription, deadline: time.NewTimer(api.timeout), hashes: make([]common.Hash, 0), s: headerSub}
 	api.filtersMu.Unlock()
 
 	go func() {
@@ -188,7 +186,7 @@ func (api *PublicFilterAPI) NewBlockFilter() rpc.ID {
 }
 
 // NewHeads send a notification each time a new (header) block is appended to the chain.
-func (api *PublicFilterAPI) NewHeads(ctx context.Context) (*rpc.Subscription, error) {
+func (api *FilterAPI) NewHeads(ctx context.Context) (*rpc.Subscription, error) {
 	notifier, supported := rpc.NotifierFromContext(ctx)
 	if !supported {
 		return &rpc.Subscription{}, rpc.ErrNotificationsUnsupported
@@ -218,7 +216,7 @@ func (api *PublicFilterAPI) NewHeads(ctx context.Context) (*rpc.Subscription, er
 }
 
 // Logs creates a subscription that fires for all new log that match the given filter criteria.
-func (api *PublicFilterAPI) Logs(ctx context.Context, crit FilterCriteria) (*rpc.Subscription, error) {
+func (api *FilterAPI) Logs(ctx context.Context, crit FilterCriteria) (*rpc.Subscription, error) {
 	notifier, supported := rpc.NotifierFromContext(ctx)
 	if !supported {
 		return &rpc.Subscription{}, rpc.ErrNotificationsUnsupported
@@ -229,7 +227,7 @@ func (api *PublicFilterAPI) Logs(ctx context.Context, crit FilterCriteria) (*rpc
 		matchedLogs = make(chan []*model.Log)
 	)
 
-	logsSub, err := api.events.SubscribeLogs(entropy.FilterQuery(crit), matchedLogs)
+	logsSub, err := api.events.SubscribeLogs(entropyio.FilterQuery(crit), matchedLogs)
 	if err != nil {
 		return nil, err
 	}
@@ -240,6 +238,7 @@ func (api *PublicFilterAPI) Logs(ctx context.Context, crit FilterCriteria) (*rpc
 			select {
 			case logs := <-matchedLogs:
 				for _, log := range logs {
+					log := log
 					notifier.Notify(rpcSub.ID, &log)
 				}
 			case <-rpcSub.Err(): // client send an unsubscribe request
@@ -257,7 +256,7 @@ func (api *PublicFilterAPI) Logs(ctx context.Context, crit FilterCriteria) (*rpc
 
 // FilterCriteria represents a request to create a new filter.
 // Same as entropy.FilterQuery but with UnmarshalJSON() method.
-type FilterCriteria entropy.FilterQuery
+type FilterCriteria entropyio.FilterQuery
 
 // NewFilter creates a new filter and returns the filter id. It can be
 // used to retrieve logs when the state changes. This method cannot be
@@ -270,17 +269,15 @@ type FilterCriteria entropy.FilterQuery
 // again but with the removed property set to true.
 //
 // In case "fromBlock" > "toBlock" an error is returned.
-//
-// https://github.com/entropy/wiki/wiki/JSON-RPC#entropy_newfilter
-func (api *PublicFilterAPI) NewFilter(crit FilterCriteria) (rpc.ID, error) {
+func (api *FilterAPI) NewFilter(crit FilterCriteria) (rpc.ID, error) {
 	logs := make(chan []*model.Log)
-	logsSub, err := api.events.SubscribeLogs(entropy.FilterQuery(crit), logs)
+	logsSub, err := api.events.SubscribeLogs(entropyio.FilterQuery(crit), logs)
 	if err != nil {
-		return rpc.ID(""), err
+		return "", err
 	}
 
 	api.filtersMu.Lock()
-	api.filters[logsSub.ID] = &filter{typ: LogsSubscription, crit: crit, deadline: time.NewTimer(deadline), logs: make([]*model.Log, 0), s: logsSub}
+	api.filters[logsSub.ID] = &filter{typ: LogsSubscription, crit: crit, deadline: time.NewTimer(api.timeout), logs: make([]*model.Log, 0), s: logsSub}
 	api.filtersMu.Unlock()
 
 	go func() {
@@ -305,9 +302,7 @@ func (api *PublicFilterAPI) NewFilter(crit FilterCriteria) (rpc.ID, error) {
 }
 
 // GetLogs returns logs matching the given argument that are stored within the state.
-//
-// https://github.com/entropy/wiki/wiki/JSON-RPC#entropy_getlogs
-func (api *PublicFilterAPI) GetLogs(ctx context.Context, crit FilterCriteria) ([]*model.Log, error) {
+func (api *FilterAPI) GetLogs(ctx context.Context, crit FilterCriteria) ([]*model.Log, error) {
 	var filter *Filter
 	if crit.BlockHash != nil {
 		// Block filter requested, construct a single-shot filter
@@ -334,9 +329,7 @@ func (api *PublicFilterAPI) GetLogs(ctx context.Context, crit FilterCriteria) ([
 }
 
 // UninstallFilter removes the filter with the given filter id.
-//
-// https://github.com/entropy/wiki/wiki/JSON-RPC#entropy_uninstallfilter
-func (api *PublicFilterAPI) UninstallFilter(id rpc.ID) bool {
+func (api *FilterAPI) UninstallFilter(id rpc.ID) bool {
 	api.filtersMu.Lock()
 	f, found := api.filters[id]
 	if found {
@@ -352,9 +345,7 @@ func (api *PublicFilterAPI) UninstallFilter(id rpc.ID) bool {
 
 // GetFilterLogs returns the logs for the filter with the given id.
 // If the filter could not be found an empty array of logs is returned.
-//
-// https://github.com/entropy/wiki/wiki/JSON-RPC#entropy_getfilterlogs
-func (api *PublicFilterAPI) GetFilterLogs(ctx context.Context, id rpc.ID) ([]*model.Log, error) {
+func (api *FilterAPI) GetFilterLogs(ctx context.Context, id rpc.ID) ([]*model.Log, error) {
 	api.filtersMu.Lock()
 	f, found := api.filters[id]
 	api.filtersMu.Unlock()
@@ -393,9 +384,7 @@ func (api *PublicFilterAPI) GetFilterLogs(ctx context.Context, id rpc.ID) ([]*mo
 //
 // For pending transaction and block filters the result is []common.Hash.
 // (pending)Log filters return []Log.
-//
-// https://github.com/entropy/wiki/wiki/JSON-RPC#entropy_getfilterchanges
-func (api *PublicFilterAPI) GetFilterChanges(id rpc.ID) (interface{}, error) {
+func (api *FilterAPI) GetFilterChanges(id rpc.ID) (interface{}, error) {
 	api.filtersMu.Lock()
 	defer api.filtersMu.Unlock()
 
@@ -405,14 +394,14 @@ func (api *PublicFilterAPI) GetFilterChanges(id rpc.ID) (interface{}, error) {
 			// receive timer value and reset timer
 			<-f.deadline.C
 		}
-		f.deadline.Reset(deadline)
+		f.deadline.Reset(api.timeout)
 
 		switch f.typ {
 		case PendingTransactionsSubscription, BlocksSubscription:
 			hashes := f.hashes
 			f.hashes = nil
 			return returnHashes(hashes), nil
-		case LogsSubscription:
+		case LogsSubscription, MinedAndPendingLogsSubscription:
 			logs := f.logs
 			f.logs = nil
 			return returnLogs(logs), nil

@@ -2,11 +2,8 @@ package state
 
 import (
 	"bytes"
-	"fmt"
 	"github.com/entropyio/go-entropy/common"
-	"math/rand"
 	"testing"
-	"time"
 )
 
 func BenchmarkCutOriginal(b *testing.B) {

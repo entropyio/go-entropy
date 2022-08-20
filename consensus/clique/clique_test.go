@@ -2,12 +2,11 @@ package clique
 
 import (
 	"github.com/entropyio/go-entropy/blockchain"
-	"github.com/entropyio/go-entropy/blockchain/genesis"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/config"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/evm"
 	"math/big"
 	"testing"
@@ -22,26 +21,27 @@ import (
 func TestReimportMirroredState(t *testing.T) {
 	// Initialize a Clique chain with a single signer
 	var (
-		db     = mapper.NewMemoryDatabase()
+		db     = rawdb.NewMemoryDatabase()
 		key, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
 		addr   = crypto.PubkeyToAddress(key.PublicKey)
-		engine = New(config.CliqueChainConfig.Clique, db)
+		engine = New(config.TestChainConfig.Clique, db)
 		signer = new(model.HomesteadSigner)
 	)
-	genspec := &genesis.Genesis{
+	genspec := &blockchain.Genesis{
 		ExtraData: make([]byte, extraVanity+common.AddressLength+extraSeal),
-		Alloc: map[common.Address]genesis.GenesisAccount{
-			addr: {Balance: big.NewInt(1)},
+		Alloc: map[common.Address]blockchain.GenesisAccount{
+			addr: {Balance: big.NewInt(10000000000000000)},
 		},
+		BaseFee: big.NewInt(config.InitialBaseFee),
 	}
 	copy(genspec.ExtraData[extraVanity:], addr[:])
-	genesisObj := genspec.MustCommit(db)
+	genesis := genspec.MustCommit(db)
 
 	// Generate a batch of blocks, each properly signed
-	chain, _ := blockchain.NewBlockChain(db, nil, config.CliqueChainConfig, engine, evm.Config{}, nil)
+	chain, _ := blockchain.NewBlockChain(db, nil, config.CliqueChainConfig, engine, evm.Config{}, nil, nil)
 	defer chain.Stop()
 
-	blocks, _ := blockchain.GenerateChain(config.CliqueChainConfig, genesisObj, engine, db, 3, func(i int, block *blockchain.BlockGen) {
+	blocks, _ := blockchain.GenerateChain(config.CliqueChainConfig, genesis, engine, db, 3, func(i int, block *blockchain.BlockGen) {
 		// The chain maker doesn't have access to a chain, so the difficulty will be
 		// lets unset (nil). Set it here to the correct value.
 		block.SetDifficulty(diffInTurn)
@@ -49,7 +49,7 @@ func TestReimportMirroredState(t *testing.T) {
 		// We want to simulate an empty middle block, having the same state as the
 		// first one. The last is needs a state change again to force a reorg.
 		if i != 1 {
-			tx, err := model.SignTx(model.NewTransaction(block.TxNonce(addr), common.Address{0x00}, new(big.Int), config.TxGas, nil, nil), signer, key)
+			tx, err := model.SignTx(model.NewTransaction(block.TxNonce(addr), common.Address{0x00}, new(big.Int), config.TxGas, block.BaseFee(), nil), signer, key)
 			if err != nil {
 				panic(err)
 			}
@@ -69,10 +69,10 @@ func TestReimportMirroredState(t *testing.T) {
 		blocks[i] = block.WithSeal(header)
 	}
 	// Insert the first two blocks and make sure the chain is valid
-	db = mapper.NewMemoryDatabase()
+	db = rawdb.NewMemoryDatabase()
 	genspec.MustCommit(db)
 
-	chain, _ = blockchain.NewBlockChain(db, nil, config.CliqueChainConfig, engine, evm.Config{}, nil)
+	chain, _ = blockchain.NewBlockChain(db, nil, config.CliqueChainConfig, engine, evm.Config{}, nil, nil)
 	defer chain.Stop()
 
 	if _, err := chain.InsertChain(blocks[:2]); err != nil {
@@ -83,9 +83,9 @@ func TestReimportMirroredState(t *testing.T) {
 	}
 
 	// Simulate a crash by creating a new chain on top of the database, without
-	// flushing the dirty states out. Insert the last block, trigerring a sidechain
+	// flushing the dirty states out. Insert the last block, triggering a sidechain
 	// reimport.
-	chain, _ = blockchain.NewBlockChain(db, nil, config.CliqueChainConfig, engine, evm.Config{}, nil)
+	chain, _ = blockchain.NewBlockChain(db, nil, config.CliqueChainConfig, engine, evm.Config{}, nil, nil)
 	defer chain.Stop()
 
 	if _, err := chain.InsertChain(blocks[2:]); err != nil {
@@ -93,5 +93,18 @@ func TestReimportMirroredState(t *testing.T) {
 	}
 	if head := chain.CurrentBlock().NumberU64(); head != 3 {
 		t.Fatalf("chain head mismatch: have %d, want %d", head, 3)
+	}
+}
+
+func TestSealHash(t *testing.T) {
+	have := SealHash(&model.Header{
+		Difficulty: new(big.Int),
+		Number:     new(big.Int),
+		Extra:      make([]byte, 32+65),
+		BaseFee:    new(big.Int),
+	})
+	want := common.HexToHash("0xbd3d1fa43fbc4c5bfcc91b179ec92e2861df3654de60468beb908ff805359e8f")
+	if have != want {
+		t.Errorf("have %x, want %x", have, want)
 	}
 }

@@ -3,13 +3,12 @@ package enode
 import (
 	"crypto/ecdsa"
 	"fmt"
-	"io"
-
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/common/mathutil"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"github.com/entropyio/go-entropy/server/p2p/enr"
 	"golang.org/x/crypto/sha3"
+	"io"
 )
 
 // List of known secure identity schemes.
@@ -33,7 +32,7 @@ func SignV4(r *enr.Record, privkey *ecdsa.PrivateKey) error {
 	cpy.Set(Secp256k1(privkey.PublicKey))
 
 	h := sha3.NewLegacyKeccak256()
-	rlputil.Encode(h, cpy.AppendElements(nil))
+	rlp.Encode(h, cpy.AppendElements(nil))
 	sig, err := crypto.Sign(h.Sum(nil), privkey)
 	if err != nil {
 		return err
@@ -54,7 +53,7 @@ func (V4ID) Verify(r *enr.Record, sig []byte) error {
 	}
 
 	h := sha3.NewLegacyKeccak256()
-	rlputil.Encode(h, r.AppendElements(nil))
+	rlp.Encode(h, r.AppendElements(nil))
 	if !crypto.VerifySignature(entry, h.Sum(nil), sig) {
 		return enr.ErrInvalidSig
 	}
@@ -80,11 +79,11 @@ func (v Secp256k1) ENRKey() string { return "secp256k1" }
 
 // EncodeRLP implements rlp.Encoder.
 func (v Secp256k1) EncodeRLP(w io.Writer) error {
-	return rlputil.Encode(w, crypto.CompressPubkey((*ecdsa.PublicKey)(&v)))
+	return rlp.Encode(w, crypto.CompressPubkey((*ecdsa.PublicKey)(&v)))
 }
 
 // DecodeRLP implements rlp.Decoder.
-func (v *Secp256k1) DecodeRLP(s *rlputil.Stream) error {
+func (v *Secp256k1) DecodeRLP(s *rlp.Stream) error {
 	buf, err := s.Bytes()
 	if err != nil {
 		return err

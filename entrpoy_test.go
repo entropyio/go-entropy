@@ -1,21 +1,19 @@
-package entropy_test
+package entropyio_test
 
 import (
 	"fmt"
-	"github.com/entropyio/go-entropy/accounts"
 	"github.com/entropyio/go-entropy/blockchain"
-	"github.com/entropyio/go-entropy/blockchain/genesis"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus/ethash"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/entropy"
-	"github.com/entropyio/go-entropy/event"
+	"github.com/entropyio/go-entropy/entropy/entropyconfig"
 	"github.com/entropyio/go-entropy/evm"
 	"github.com/entropyio/go-entropy/server/node"
 	"math/big"
-	"reflect"
+	"os"
 	"testing"
 	"time"
 )
@@ -30,37 +28,42 @@ var (
 	addr2    = crypto.PubkeyToAddress(key2.PublicKey)
 	addr3    = crypto.PubkeyToAddress(key3.PublicKey)
 	coinbase = crypto.PubkeyToAddress(baseKey.PublicKey)
+
+	//key4, _ = crypto.HexToECDSA("8a1faa8f95be41cd7ccb6168179afb4504aefe388d1e14474d32c45c72ce7b7a")
+	//key5, _ = crypto.HexToECDSA("49a7cc7aa6f6645917e7b807e9d1c00d4fa71f18343b0d4122a4d2df64dd6fee")
+	//addr4   = crypto.PubkeyToAddress(key4.PublicKey)
+	//addr5   = crypto.PubkeyToAddress(key5.PublicKey)
 )
 
 func printBlockChain(bc *blockchain.BlockChain) {
 	for i := bc.CurrentBlock().Number().Uint64(); i > 0; i-- {
-		b := bc.GetBlockByNumber(uint64(i))
+		b := bc.GetBlockByNumber(i)
 		fmt.Printf("\n blockChain: number=%d, hash=%X, difficulty=%v\n", i, b.Hash(), b.Difficulty())
 	}
 }
 
 func TestCreateChainInDB(t *testing.T) {
-	var (
-		db, _ = mapper.NewLevelDBDatabase("/Users/wangzhen/Desktop/blockchain/GoEntropy/data/entropy_test/chaindata", 0, 0, "test")
-	)
+	err := os.RemoveAll("./testData/entropy_test/chaindata")
+	fmt.Println(err)
 
+	db, _ := rawdb.NewLevelDBDatabase("./testData/entropy_test/chaindata", 0, 0, "test", false)
 	// Ensure that key1 has some funds in the genesis block.
-	gspec := &genesis.Genesis{
+	gspec := &blockchain.Genesis{
 		Coinbase: coinbase,
 		Config:   config.TestChainConfig,
-		Alloc: genesis.GenesisAlloc{
+		Alloc: blockchain.GenesisAlloc{
 			addr1: {Balance: big.NewInt(1000000000)},
 			addr2: {Balance: big.NewInt(2000000000)},
 			addr3: {Balance: big.NewInt(3000000000)},
+			//addr4: {Balance: big.NewInt(4000000000)},
+			//addr5: {Balance: big.NewInt(4000000000)},
 		},
+		Timestamp: uint64(time.Now().Unix()),
 	}
-	genesisObj := gspec.MustCommit(db)
+	genesis := gspec.MustCommit(db)
 
 	// 添加一个block
-	// Insert an easy and a difficult chain afterwards
-	//signer := model.HomesteadSigner{}
-
-	chain, _ := blockchain.GenerateChain(config.TestChainConfig, genesisObj, ethash.NewFaker(), db, 2, func(i int, gen *blockchain.BlockGen) {
+	chain, _ := blockchain.GenerateChain(config.TestChainConfig, genesis, ethash.NewFaker(), db, 0, func(i int, gen *blockchain.BlockGen) {
 		switch i {
 		case 0:
 			fmt.Println("in block 1 callback... add 1 transaction")
@@ -76,7 +79,7 @@ func TestCreateChainInDB(t *testing.T) {
 	})
 
 	// Import the chain. This runs all block validation rules.
-	blockchainObj, _ := blockchain.NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{}, nil)
+	blockchainObj, _ := blockchain.NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{}, nil, nil)
 	defer blockchainObj.Stop()
 
 	if i, err := blockchainObj.InsertChain(chain); err != nil {
@@ -96,10 +99,10 @@ func TestCreateChainInDB(t *testing.T) {
 
 func TestLoadChainFromDB(t *testing.T) {
 	var (
-		db, _ = mapper.NewLevelDBDatabase("/Users/wangzhen/Desktop/blockchain/GoEntropy/data/entropy_test/chaindata", 0, 0, "test")
+		db, _ = rawdb.NewLevelDBDatabase("./testData/entropy_test/chaindata", 0, 0, "test", false)
 	)
 
-	blockchainObj, _ := blockchain.NewBlockChain(db, nil, config.TestChainConfig, ethash.NewFaker(), evm.Config{}, nil)
+	blockchainObj, _ := blockchain.NewBlockChain(db, nil, config.TestChainConfig, ethash.NewFaker(), evm.Config{}, nil, nil)
 	defer blockchainObj.Stop()
 
 	state, _ := blockchainObj.State()
@@ -109,17 +112,16 @@ func TestLoadChainFromDB(t *testing.T) {
 	fmt.Printf("balance of addr2: %X = %d\n", addr2, state.GetBalance(addr2))
 	fmt.Printf("balance of addr3: %X = %d\n", addr3, state.GetBalance(addr3))
 
-	// add transaction
+	//add transaction
 	curNum := blockchainObj.CurrentBlock().Number().Uint64()
-
 	chain, _ := blockchain.GenerateChain(config.TestChainConfig, blockchainObj.GetBlockByNumber(curNum), ethash.NewFaker(), db, 1, func(i int, gen *blockchain.BlockGen) {
 		fmt.Println("create new block, number=", i)
 		signer := model.HomesteadSigner{}
 
-		action1 := model.NewTransaction(gen.TxNonce(addr1), addr2, big.NewInt(12345), config.TxGas, nil, nil)
+		action1 := model.NewTx(&model.LegacyTx{Nonce: gen.TxNonce(addr1), To: &addr2, Value: big.NewInt(12345), Gas: config.TxGas, GasPrice: nil, Data: nil})
 		tx1, _ := model.SignTx(action1, signer, key1)
 
-		action2 := model.NewTransaction(gen.TxNonce(addr2), addr3, big.NewInt(12345), config.TxGas, nil, nil)
+		action2 := model.NewTx(&model.LegacyTx{Nonce: gen.TxNonce(addr2), To: &addr3, Value: big.NewInt(12345), Gas: config.TxGas, GasPrice: nil, Data: nil})
 		tx2, _ := model.SignTx(action2, signer, key2)
 		gen.AddTx(tx1)
 		gen.AddTx(tx2)
@@ -139,29 +141,33 @@ func TestLoadChainFromDB(t *testing.T) {
 	fmt.Printf("balance of addr2: %X = %d\n", addr2, state.GetBalance(addr2))
 	fmt.Printf("balance of addr3: %X = %d\n", addr3, state.GetBalance(addr3))
 
-	//printBlockChain(blockchainObj)
+	printBlockChain(blockchainObj)
 }
 
 func TestMinerStart(t *testing.T) {
-	nodeConfig := &node.Config{
-		Name:    "entropy_test",
-		DataDir: "/Users/wangzhen/Desktop/blockchain/GoEntropy/data",
+	testKey, _ := crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
+	testAddr := crypto.PubkeyToAddress(testKey.PublicKey)
+	testBalance := big.NewInt(2e15)
+	var genesis = &blockchain.Genesis{
+		Config:    config.TestChainConfig,
+		Alloc:     blockchain.GenesisAlloc{testAddr: {Balance: testBalance}},
+		ExtraData: []byte("test genesis"),
+		Timestamp: 9000,
+		BaseFee:   big.NewInt(config.InitialBaseFee),
 	}
+	configObj := &entropyconfig.Config{Genesis: genesis}
+	configObj.Ethash.PowMode = ethash.ModeFake
 
-	ctx := &node.ServiceContext{
-		Config:         nodeConfig,
-		Services:       make(map[reflect.Type]node.Service),
-		EventMux:       new(event.TypeMux),
-		AccountManager: new(accounts.Manager),
+	// Create node
+	nodeObj, err := node.New(&node.Config{})
+	if err != nil {
+		t.Fatalf("can't create new node: %v", err)
 	}
+	entropyObj, _ := entropy.New(nodeObj, configObj)
 
-	config := &entropy.Config{}
-
-	entropyObj, _ := entropy.New(ctx, config)
 	entropyObj.SetEntropyBase(coinbase)
-
 	fmt.Printf("entropy backend StartMining...")
-	entropyObj.StartMining(1)
+	_ = entropyObj.StartMining(1)
 	time.Sleep(6000 * time.Second)
 
 	entropyObj.StopMining()

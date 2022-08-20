@@ -1,12 +1,11 @@
 package dnsdisc
 
 import (
+	"github.com/davecgh/go-spew/spew"
 	"github.com/entropyio/go-entropy/common/hexutil"
 	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"reflect"
 	"testing"
-
-	"github.com/davecgh/go-spew/spew"
 )
 
 func TestParseRoot(t *testing.T) {

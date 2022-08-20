@@ -2,32 +2,26 @@ package simulations
 
 import (
 	"context"
-	"fmt"
-	"math/rand"
-	"net/http/httptest"
-	"reflect"
-	"sync"
-	"sync/atomic"
-	"testing"
-	"time"
-
-	"github.com/entropyio/go-entropy/event"
-
 	"flag"
+	"fmt"
+	"github.com/entropyio/go-entropy/event"
 	"github.com/entropyio/go-entropy/rpc"
 	"github.com/entropyio/go-entropy/server/node"
 	"github.com/entropyio/go-entropy/server/p2p"
 	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"github.com/entropyio/go-entropy/server/p2p/simulations/adapters"
+	"math/rand"
+	"net/http/httptest"
+	"os"
+	"reflect"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
 )
 
 func TestMain(m *testing.M) {
-	loglevel := flag.Int("loglevel", 2, "verbosity of logs")
-
 	flag.Parse()
-
-	//	log.PrintOrigins(true)
-	//	log.Root().SetHandler(log.LvlFilterHandler(log.Lvl(*loglevel), log.StreamHandler(colorable.NewColorableStderr(), log.TerminalFormat(true))))
 	os.Exit(m.Run())
 }
 
@@ -47,12 +41,15 @@ type testService struct {
 	state atomic.Value
 }
 
-func newTestService(ctx *adapters.ServiceContext) (node.Service, error) {
+func newTestService(ctx *adapters.ServiceContext, stack *node.Node) (node.Lifecycle, error) {
 	svc := &testService{
 		id:    ctx.Config.ID,
 		peers: make(map[enode.ID]*testPeer),
 	}
 	svc.state.Store(ctx.Snapshot)
+
+	stack.RegisterProtocols(svc.Protocols())
+	stack.RegisterAPIs(svc.APIs())
 	return svc, nil
 }
 
@@ -109,7 +106,7 @@ func (t *testService) APIs() []rpc.API {
 	}}
 }
 
-func (t *testService) Start(server *p2p.Server) error {
+func (t *testService) Start() error {
 	return nil
 }
 
@@ -121,7 +118,7 @@ func (t *testService) Stop() error {
 // message with the given code
 func (t *testService) handshake(rw p2p.MsgReadWriter, code uint64) error {
 	errc := make(chan error, 2)
-	go func() { errc <- p2p.Send(rw, code, struct{}{}) }()
+	go func() { errc <- p2p.SendItems(rw, code) }()
 	go func() { errc <- p2p.ExpectMsg(rw, code, struct{}{}) }()
 	for i := 0; i < 2; i++ {
 		if err := <-errc; err != nil {
@@ -271,7 +268,7 @@ func (t *TestAPI) Events(ctx context.Context) (*rpc.Subscription, error) {
 	return rpcSub, nil
 }
 
-var testServices = adapters.Services{
+var testServices = adapters.LifecycleConstructors{
 	"test": newTestService,
 }
 
@@ -425,7 +422,7 @@ loop:
 	for {
 		select {
 		case event := <-t.events:
-			t.Logf("received %s event: %s", event.Type, event)
+			t.Logf("received %s event: %v", event.Type, event)
 
 			if event.Type != EventTypeMsg || event.Msg.Received {
 				continue loop
@@ -461,7 +458,7 @@ func (t *expectEvents) expect(events ...*Event) {
 	for {
 		select {
 		case event := <-t.events:
-			t.Logf("received %s event: %s", event.Type, event)
+			t.Logf("received %s event: %v", event.Type, event)
 
 			expected := events[i]
 			if event.Type != expected.Type {

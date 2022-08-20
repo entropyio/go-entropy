@@ -3,10 +3,9 @@ package keystore
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/entropyio/go-entropy/common"
 	"os"
 	"path/filepath"
-
-	"github.com/entropyio/go-entropy/common"
 )
 
 type keyStorePlain struct {

@@ -2,17 +2,19 @@ package forkid
 
 import (
 	"bytes"
-	"math"
-	"testing"
-
 	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"github.com/entropyio/go-entropy/config"
+	"math"
+	"math/big"
+	"testing"
 )
 
 // TestCreation tests that different genesis and fork rule combinations result in
 // the correct fork ID.
 func TestCreation(t *testing.T) {
+	mergeConfig := *config.MainnetChainConfig
+	mergeConfig.MergeNetsplitBlock = big.NewInt(18000000)
 	type testcase struct {
 		head uint64
 		want ID
@@ -27,24 +29,32 @@ func TestCreation(t *testing.T) {
 			config.MainnetChainConfig,
 			config.MainnetGenesisHash,
 			[]testcase{
-				{0, ID{Hash: checksumToBytes(0xfc64ec04), Next: 1150000}},       // Unsynced
-				{1149999, ID{Hash: checksumToBytes(0xfc64ec04), Next: 1150000}}, // Last Frontier block
-				{1150000, ID{Hash: checksumToBytes(0x97c2c34c), Next: 1920000}}, // First Homestead block
-				{1919999, ID{Hash: checksumToBytes(0x97c2c34c), Next: 1920000}}, // Last Homestead block
-				{1920000, ID{Hash: checksumToBytes(0x91d1f948), Next: 2463000}}, // First DAO block
-				{2462999, ID{Hash: checksumToBytes(0x91d1f948), Next: 2463000}}, // Last DAO block
-				{2463000, ID{Hash: checksumToBytes(0x7a64da13), Next: 2675000}}, // First Tangerine block
-				{2674999, ID{Hash: checksumToBytes(0x7a64da13), Next: 2675000}}, // Last Tangerine block
-				{2675000, ID{Hash: checksumToBytes(0x3edd5b10), Next: 4370000}}, // First Spurious block
-				{4369999, ID{Hash: checksumToBytes(0x3edd5b10), Next: 4370000}}, // Last Spurious block
-				{4370000, ID{Hash: checksumToBytes(0xa00bc324), Next: 7280000}}, // First Byzantium block
-				{7279999, ID{Hash: checksumToBytes(0xa00bc324), Next: 7280000}}, // Last Byzantium block
-				{7280000, ID{Hash: checksumToBytes(0x668db0af), Next: 9069000}}, // First and last Constantinople, first Petersburg block
-				{9068999, ID{Hash: checksumToBytes(0x668db0af), Next: 9069000}}, // Last Petersburg block
-				{9069000, ID{Hash: checksumToBytes(0x879d6e30), Next: 9200000}}, // First Istanbul and first Muir Glacier block
-				{9199999, ID{Hash: checksumToBytes(0x879d6e30), Next: 9200000}}, // Last Istanbul and first Muir Glacier block
-				{9200000, ID{Hash: checksumToBytes(0xe029e991), Next: 0}},       // First Muir Glacier block
-				{10000000, ID{Hash: checksumToBytes(0xe029e991), Next: 0}},      // Future Muir Glacier block
+				{0, ID{Hash: checksumToBytes(0xfc64ec04), Next: 1150000}},         // Unsynced
+				{1149999, ID{Hash: checksumToBytes(0xfc64ec04), Next: 1150000}},   // Last Frontier block
+				{1150000, ID{Hash: checksumToBytes(0x97c2c34c), Next: 1920000}},   // First Homestead block
+				{1919999, ID{Hash: checksumToBytes(0x97c2c34c), Next: 1920000}},   // Last Homestead block
+				{1920000, ID{Hash: checksumToBytes(0x91d1f948), Next: 2463000}},   // First DAO block
+				{2462999, ID{Hash: checksumToBytes(0x91d1f948), Next: 2463000}},   // Last DAO block
+				{2463000, ID{Hash: checksumToBytes(0x7a64da13), Next: 2675000}},   // First Tangerine block
+				{2674999, ID{Hash: checksumToBytes(0x7a64da13), Next: 2675000}},   // Last Tangerine block
+				{2675000, ID{Hash: checksumToBytes(0x3edd5b10), Next: 4370000}},   // First Spurious block
+				{4369999, ID{Hash: checksumToBytes(0x3edd5b10), Next: 4370000}},   // Last Spurious block
+				{4370000, ID{Hash: checksumToBytes(0xa00bc324), Next: 7280000}},   // First Byzantium block
+				{7279999, ID{Hash: checksumToBytes(0xa00bc324), Next: 7280000}},   // Last Byzantium block
+				{7280000, ID{Hash: checksumToBytes(0x668db0af), Next: 9069000}},   // First and last Constantinople, first Petersburg block
+				{9068999, ID{Hash: checksumToBytes(0x668db0af), Next: 9069000}},   // Last Petersburg block
+				{9069000, ID{Hash: checksumToBytes(0x879d6e30), Next: 9200000}},   // First Istanbul and first Muir Glacier block
+				{9199999, ID{Hash: checksumToBytes(0x879d6e30), Next: 9200000}},   // Last Istanbul and first Muir Glacier block
+				{9200000, ID{Hash: checksumToBytes(0xe029e991), Next: 12244000}},  // First Muir Glacier block
+				{12243999, ID{Hash: checksumToBytes(0xe029e991), Next: 12244000}}, // Last Muir Glacier block
+				{12244000, ID{Hash: checksumToBytes(0x0eb440f6), Next: 12965000}}, // First Berlin block
+				{12964999, ID{Hash: checksumToBytes(0x0eb440f6), Next: 12965000}}, // Last Berlin block
+				{12965000, ID{Hash: checksumToBytes(0xb715077d), Next: 13773000}}, // First London block
+				{13772999, ID{Hash: checksumToBytes(0xb715077d), Next: 13773000}}, // Last London block
+				{13773000, ID{Hash: checksumToBytes(0x20c327fc), Next: 15050000}}, // First Arrow Glacier block
+				{15049999, ID{Hash: checksumToBytes(0x20c327fc), Next: 15050000}}, // Last Arrow Glacier block
+				{15050000, ID{Hash: checksumToBytes(0xf0afd0e3), Next: 0}},        // First Gray Glacier block
+				{20000000, ID{Hash: checksumToBytes(0xf0afd0e3), Next: 0}},        // Future Gray Glacier block
 			},
 		},
 		// Ropsten test cases
@@ -108,6 +118,10 @@ func TestValidation(t *testing.T) {
 		// neither forks passed at neither nodes, they may mismatch, but we still connect for now.
 		{7279999, ID{Hash: checksumToBytes(0xa00bc324), Next: math.MaxUint64}, nil},
 
+		// Local is mainnet exactly on Petersburg, remote announces Byzantium + knowledge about Petersburg. Remote
+		// is simply out of sync, accept.
+		{7280000, ID{Hash: checksumToBytes(0xa00bc324), Next: 7280000}, nil},
+
 		// Local is mainnet Petersburg, remote announces Byzantium + knowledge about Petersburg. Remote
 		// is simply out of sync, accept.
 		{7987396, ID{Hash: checksumToBytes(0xa00bc324), Next: 7280000}, nil},
@@ -168,7 +182,7 @@ func TestEncoding(t *testing.T) {
 		{ID{Hash: checksumToBytes(math.MaxUint32), Next: math.MaxUint64}, common.Hex2Bytes("ce84ffffffff88ffffffffffffffff")},
 	}
 	for i, tt := range tests {
-		have, err := rlputil.EncodeToBytes(tt.id)
+		have, err := rlp.EncodeToBytes(tt.id)
 		if err != nil {
 			t.Errorf("test %d: failed to encode forkid: %v", i, err)
 			continue

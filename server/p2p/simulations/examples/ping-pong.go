@@ -3,20 +3,17 @@ package main
 import (
 	"flag"
 	"fmt"
-	"io/ioutil"
-	"net/http"
-	"os"
-	"sync/atomic"
-	"time"
-
 	"github.com/entropyio/go-entropy/logger"
-
-	"github.com/entropyio/go-entropy/rpc"
 	"github.com/entropyio/go-entropy/server/node"
 	"github.com/entropyio/go-entropy/server/p2p"
 	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"github.com/entropyio/go-entropy/server/p2p/simulations"
 	"github.com/entropyio/go-entropy/server/p2p/simulations/adapters"
+	"io"
+	"net/http"
+	"os"
+	"sync/atomic"
+	"time"
 )
 
 var log = logger.NewLogger("simu")
@@ -32,12 +29,14 @@ func main() {
 	//log.Root().SetHandler(log.LvlFilterHandler(log.LvlTrace, log.StreamHandler(os.Stderr, log.TerminalFormat(false))))
 
 	// register a single ping-pong service
-	services := map[string]adapters.ServiceFunc{
-		"ping-pong": func(ctx *adapters.ServiceContext) (node.Service, error) {
-			return newPingPongService(ctx.Config.ID), nil
+	services := map[string]adapters.LifecycleConstructor{
+		"ping-pong": func(ctx *adapters.ServiceContext, stack *node.Node) (node.Lifecycle, error) {
+			pps := newPingPongService(ctx.Config.ID)
+			stack.RegisterProtocols(pps.Protocols())
+			return pps, nil
 		},
 	}
-	adapters.RegisterServices(services)
+	adapters.RegisterLifecycles(services)
 
 	// create the NodeAdapter
 	var adapter adapters.NodeAdapter
@@ -49,7 +48,7 @@ func main() {
 		adapter = adapters.NewSimAdapter(services)
 
 	case "exec":
-		tmpdir, err := ioutil.TempDir("", "p2p-example")
+		tmpdir, err := os.MkdirTemp("", "p2p-example")
 		if err != nil {
 			log.Error("error creating temp dir", "err", err)
 		}
@@ -75,15 +74,13 @@ func main() {
 // sends a ping to all its connected peers every 10s and receives a pong in
 // return
 type pingPongService struct {
-	id enode.ID
-	//log      log.Logger
+	id       enode.ID
 	received int64
 }
 
 func newPingPongService(id enode.ID) *pingPongService {
 	return &pingPongService{
 		id: id,
-		//log: log.New("node.id", id),
 	}
 }
 
@@ -97,17 +94,11 @@ func (p *pingPongService) Protocols() []p2p.Protocol {
 	}}
 }
 
-func (p *pingPongService) APIs() []rpc.API {
-	return nil
-}
-
-func (p *pingPongService) Start(server *p2p.Server) error {
-	log.Info("ping-pong service starting")
+func (p *pingPongService) Start() error {
 	return nil
 }
 
 func (p *pingPongService) Stop() error {
-	log.Info("ping-pong service stopping")
 	return nil
 }
 
@@ -127,7 +118,6 @@ const (
 // Run implements the ping-pong protocol which sends ping messages to the peer
 // at 10s intervals, and responds to pings with pong messages.
 func (p *pingPongService) Run(peer *p2p.Peer, rw p2p.MsgReadWriter) error {
-	//log := p.log.New("peer.id", peer.ID())
 
 	errC := make(chan error)
 	go func() {
@@ -146,7 +136,7 @@ func (p *pingPongService) Run(peer *p2p.Peer, rw p2p.MsgReadWriter) error {
 				errC <- err
 				return
 			}
-			payload, err := ioutil.ReadAll(msg.Payload)
+			payload, err := io.ReadAll(msg.Payload)
 			if err != nil {
 				errC <- err
 				return

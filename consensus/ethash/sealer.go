@@ -31,7 +31,7 @@ var (
 
 // Seal implements consensus.Engine, attempting to find a nonce that satisfies
 // the block's difficulty requirements.
-func (ethash *Ethash) Seal(chain consensus.ChainReader, block *model.Block, results chan<- *model.Block, stop <-chan struct{}) error {
+func (ethash *Ethash) Seal(chain consensus.ChainHeaderReader, block *model.Block, results chan<- *model.Block, stop <-chan struct{}) error {
 	//log.Debugf("Pow Seal. block number=%d, nonce=%d", block.Number(), block.Nonce())
 	// If we're running a fake PoW, simply return a 0 nonce immediately
 	if ethash.config.PowMode == ModeFake || ethash.config.PowMode == ModeFullFake {
@@ -114,8 +114,8 @@ func (ethash *Ethash) Seal(chain consensus.ChainReader, block *model.Block, resu
 // mine is the actual proof-of-work miner that searches for a nonce starting from
 // seed that results in correct final block difficulty.
 func (ethash *Ethash) mine(block *model.Block, id int, seed uint64, abort chan struct{}, found chan *model.Block) {
-	//log.Debugf("Pow mine. td=%d, number=%d, nonce=%d, id=%d, seed=%d",
-	//	block.Difficulty(), block.Number(), block.Nonce(), id, seed)
+	log.Debugf("POW mine. td=%d, number=%d, nonce=%d, id=%d, seed=%d",
+		block.Difficulty(), block.Number(), block.Nonce(), id, seed)
 	// Extract some data from the header
 	var (
 		header  = block.Header()
@@ -126,8 +126,9 @@ func (ethash *Ethash) mine(block *model.Block, id int, seed uint64, abort chan s
 	)
 	// Start generating random nonces until we abort or find a good one
 	var (
-		attempts = int64(0)
-		nonce    = seed
+		attempts  = int64(0)
+		nonce     = seed
+		powBuffer = new(big.Int)
 	)
 	log.Debug("Started ethash search for new nonces", "seed", seed)
 search:
@@ -148,7 +149,7 @@ search:
 			}
 			// Compute the PoW value of this nonce
 			digest, result := hashimotoFull(dataset.dataset, hash, nonce)
-			if new(big.Int).SetBytes(result).Cmp(target) <= 0 {
+			if powBuffer.SetBytes(result).Cmp(target) <= 0 {
 				// Correct nonce found, create a new header with it
 				header = model.CopyHeader(header)
 				header.Nonce = model.EncodeNonce(nonce)
@@ -343,7 +344,16 @@ func (s *remoteSealer) makeWork(block *model.Block) {
 // new work to be processed.
 func (s *remoteSealer) notifyWork() {
 	work := s.currentWork
-	blob, _ := json.Marshal(work)
+
+	// Encode the JSON payload of the notification. When NotifyFull is set,
+	// this is the complete block header, otherwise it is a JSON array.
+	var blob []byte
+	if s.ethash.config.NotifyFull {
+		blob, _ = json.Marshal(s.currentBlock.Header())
+	} else {
+		blob, _ = json.Marshal(work)
+	}
+
 	s.reqWG.Add(len(s.notifyURLs))
 	for _, url := range s.notifyURLs {
 		go s.sendNotification(s.notifyCtx, url, blob, work)
@@ -368,7 +378,7 @@ func (s *remoteSealer) sendNotification(ctx context.Context, url string, json []
 		log.Warning("Failed to notify remote miner", "err", err)
 	} else {
 		log.Debug("Notified remote miner", "miner", url, "hash", work[0], "target", work[2])
-		resp.Body.Close()
+		_ = resp.Body.Close()
 	}
 }
 

@@ -3,9 +3,7 @@ package enode
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
 	"net"
-	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -284,11 +282,7 @@ func testSeedQuery() error {
 }
 
 func TestDBPersistency(t *testing.T) {
-	root, err := ioutil.TempDir("", "nodedb-")
-	if err != nil {
-		t.Fatalf("failed to create temporary data folder: %v", err)
-	}
-	defer os.RemoveAll(root)
+	root := t.TempDir()
 
 	var (
 		testKey = []byte("somekey")
@@ -445,4 +439,15 @@ func TestDBExpiration(t *testing.T) {
 			}
 		}
 	}
+}
+
+// This test checks that expiration works when discovery v5 data is present
+// in the database.
+func TestDBExpireV5(t *testing.T) {
+	db, _ := OpenDB("")
+	defer db.Close()
+
+	ip := net.IP{127, 0, 0, 1}
+	db.UpdateFindFailsV5(ID{}, ip, 4)
+	db.expireNodes()
 }

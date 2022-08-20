@@ -3,7 +3,9 @@ package dnsdisc
 import (
 	"context"
 	"crypto/ecdsa"
+	"errors"
 	"github.com/entropyio/go-entropy/common/crypto"
+	"github.com/entropyio/go-entropy/common/mclock"
 	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"github.com/entropyio/go-entropy/server/p2p/enr"
 	"math/rand"
@@ -35,7 +37,7 @@ func TestClientSyncTree(t *testing.T) {
 		wantSeq   = uint(1)
 	)
 
-	c := NewClient(Config{Resolver: r})
+	c := NewClient(Config{Resolver: r, Logger: log})
 	stree, err := c.SyncTree("enrtree://AKPYQIUQIL7PSIACI32J7FGZW56E5FKHEFCCOFHILBIMW3M6LWXS2@n")
 	if err != nil {
 		t.Fatal("sync error:", err)
@@ -69,7 +71,7 @@ func TestClientSyncTreeBadNode(t *testing.T) {
 		"C7HRFPF3BLGF3YR4DY5KX3SMBE.n": "enrtree://AM5FCQLWIZX2QFPNJAP7VUERCCRNGRHWZG3YYHIUV7BVDQ5FDPRT2@morenodes.example.org",
 		"INDMVBZEEQ4ESVYAKGIYU74EAA.n": "enr:-----",
 	}
-	c := NewClient(Config{Resolver: r, Logger: testlog.Logger(t, log.LvlTrace)})
+	c := NewClient(Config{Resolver: r, Logger: log})
 	_, err := c.SyncTree("enrtree://AKPYQIUQIL7PSIACI32J7FGZW56E5FKHEFCCOFHILBIMW3M6LWXS2@n")
 	wantErr := nameError{name: "INDMVBZEEQ4ESVYAKGIYU74EAA.n", err: entryError{typ: "enr", err: errInvalidENR}}
 	if err != wantErr {
@@ -84,7 +86,7 @@ func TestIterator(t *testing.T) {
 	r := mapResolver(tree.ToTXT("n"))
 	c := NewClient(Config{
 		Resolver:  r,
-		Logger:    testlog.Logger(t, log.LvlTrace),
+		Logger:    log,
 		RateLimit: 500,
 	})
 	it, err := c.NewIterator(url)
@@ -93,6 +95,21 @@ func TestIterator(t *testing.T) {
 	}
 
 	checkIterator(t, it, nodes)
+}
+
+func TestIteratorCloseWithoutNext(t *testing.T) {
+	tree1, url1 := makeTestTree("t1", nil, nil)
+	c := NewClient(Config{Resolver: newMapResolver(tree1.ToTXT("t1"))})
+	it, err := c.NewIterator(url1)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	it.Close()
+	ok := it.Next()
+	if ok {
+		t.Fatal("Next returned true after Close")
+	}
 }
 
 // This test checks if closing randomIterator races.
@@ -125,7 +142,7 @@ func TestIteratorLinks(t *testing.T) {
 	tree2, url2 := makeTestTree("t2", nodes[10:], []string{url1})
 	c := NewClient(Config{
 		Resolver:  newMapResolver(tree1.ToTXT("t1"), tree2.ToTXT("t2")),
-		Logger:    testlog.Logger(t, log.LvlTrace),
+		Logger:    log,
 		RateLimit: 500,
 	})
 	it, err := c.NewIterator(url2)
@@ -145,7 +162,7 @@ func TestIteratorNodeUpdates(t *testing.T) {
 		resolver = newMapResolver()
 		c        = NewClient(Config{
 			Resolver:        resolver,
-			Logger:          testlog.Logger(t, log.LvlTrace),
+			Logger:          log,
 			RecheckInterval: 20 * time.Minute,
 			RateLimit:       500,
 		})
@@ -157,11 +174,109 @@ func TestIteratorNodeUpdates(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// sync the original tree.
+	// Sync the original tree.
 	resolver.add(tree1.ToTXT("n"))
 	checkIterator(t, it, nodes[:25])
 
-	// Update some nodes and ensure RandomNode returns the new nodes as well.
+	// Ensure RandomNode returns the new nodes after the tree is updated.
+	updateSomeNodes(nodesSeed1, nodes)
+	tree2, _ := makeTestTree("n", nodes, nil)
+	resolver.clear()
+	resolver.add(tree2.ToTXT("n"))
+	t.Log("tree updated")
+
+	clock.Run(c.cfg.RecheckInterval + 1*time.Second)
+	checkIterator(t, it, nodes)
+}
+
+// This test checks that the tree root is rechecked when a couple of leaf
+// requests have failed. The test is just like TestIteratorNodeUpdates, but
+// without advancing the clock by recheckInterval after the tree update.
+func TestIteratorRootRecheckOnFail(t *testing.T) {
+	var (
+		clock    = new(mclock.Simulated)
+		nodes    = testNodes(nodesSeed1, 30)
+		resolver = newMapResolver()
+		c        = NewClient(Config{
+			Resolver:        resolver,
+			Logger:          log,
+			RecheckInterval: 20 * time.Minute,
+			RateLimit:       500,
+			// Disabling the cache is required for this test because the client doesn't
+			// notice leaf failures if all records are cached.
+			CacheLimit: 1,
+		})
+	)
+	c.clock = clock
+	tree1, url := makeTestTree("n", nodes[:25], nil)
+	it, err := c.NewIterator(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Sync the original tree.
+	resolver.add(tree1.ToTXT("n"))
+	checkIterator(t, it, nodes[:25])
+
+	// Ensure RandomNode returns the new nodes after the tree is updated.
+	updateSomeNodes(nodesSeed1, nodes)
+	tree2, _ := makeTestTree("n", nodes, nil)
+	resolver.clear()
+	resolver.add(tree2.ToTXT("n"))
+	t.Log("tree updated")
+
+	checkIterator(t, it, nodes)
+}
+
+// This test checks that the iterator works correctly when the tree is initially empty.
+func TestIteratorEmptyTree(t *testing.T) {
+	var (
+		clock    = new(mclock.Simulated)
+		nodes    = testNodes(nodesSeed1, 1)
+		resolver = newMapResolver()
+		c        = NewClient(Config{
+			Resolver:        resolver,
+			Logger:          log,
+			RecheckInterval: 20 * time.Minute,
+			RateLimit:       500,
+		})
+	)
+	c.clock = clock
+	tree1, url := makeTestTree("n", nil, nil)
+	tree2, _ := makeTestTree("n", nodes, nil)
+	resolver.add(tree1.ToTXT("n"))
+
+	// Start the iterator.
+	node := make(chan *enode.Node)
+	it, err := c.NewIterator(url)
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		it.Next()
+		node <- it.Node()
+	}()
+
+	// Wait for the client to get stuck in waitForRootUpdates.
+	clock.WaitForTimers(1)
+
+	// Now update the root.
+	resolver.add(tree2.ToTXT("n"))
+
+	// Wait for it to pick up the root change.
+	clock.Run(c.cfg.RecheckInterval)
+	select {
+	case n := <-node:
+		if n.ID() != nodes[0].ID() {
+			t.Fatalf("wrong node returned")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("it.Next() did not unblock within 5s of real time")
+	}
+}
+
+// updateSomeNodes applies ENR updates to some of the given nodes.
+func updateSomeNodes(keySeed int64, nodes []*enode.Node) {
 	keys := testKeys(nodesSeed1, len(nodes))
 	for i, n := range nodes[:len(nodes)/2] {
 		r := n.Record()
@@ -171,11 +286,6 @@ func TestIteratorNodeUpdates(t *testing.T) {
 		n2, _ := enode.New(enode.ValidSchemes, r)
 		nodes[i] = n2
 	}
-	tree2, _ := makeTestTree("n", nodes, nil)
-	clock.Run(c.cfg.RecheckInterval + 1*time.Second)
-	resolver.clear()
-	resolver.add(tree2.ToTXT("n"))
-	checkIterator(t, it, nodes)
 }
 
 // This test verifies that randomIterator re-checks the root of the tree to catch
@@ -187,7 +297,7 @@ func TestIteratorLinkUpdates(t *testing.T) {
 		resolver = newMapResolver()
 		c        = NewClient(Config{
 			Resolver:        resolver,
-			Logger:          testlog.Logger(t, log.LvlTrace),
+			Logger:          log,
 			RecheckInterval: 20 * time.Minute,
 			RateLimit:       500,
 		})
@@ -211,8 +321,9 @@ func TestIteratorLinkUpdates(t *testing.T) {
 	// Add link to tree3, remove link to tree2.
 	tree1, _ = makeTestTree("t1", nodes[:10], []string{url3})
 	resolver.add(tree1.ToTXT("t1"))
-	clock.Run(c.cfg.RecheckInterval + 1*time.Second)
 	t.Log("tree1 updated")
+
+	clock.Run(c.cfg.RecheckInterval + 1*time.Second)
 
 	var wantNodes []*enode.Node
 	wantNodes = append(wantNodes, tree1.Nodes()...)
@@ -326,5 +437,5 @@ func (mr mapResolver) LookupTXT(ctx context.Context, name string) ([]string, err
 	if record, ok := mr[name]; ok {
 		return []string{record}, nil
 	}
-	return nil, nil
+	return nil, errors.New("not found")
 }

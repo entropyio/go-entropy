@@ -20,6 +20,5 @@ var (
 	receiptDropMeter    = metrics.NewRegisteredMeter("entropy/downloader/receipts/drop", nil)
 	receiptTimeoutMeter = metrics.NewRegisteredMeter("entropy/downloader/receipts/timeout", nil)
 
-	stateInMeter   = metrics.NewRegisteredMeter("entropy/downloader/states/in", nil)
-	stateDropMeter = metrics.NewRegisteredMeter("entropy/downloader/states/drop", nil)
+	throttleCounter = metrics.NewRegisteredCounter("entropy/downloader/throttle", nil)
 )

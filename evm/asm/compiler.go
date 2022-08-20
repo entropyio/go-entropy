@@ -2,12 +2,11 @@ package asm
 
 import (
 	"fmt"
+	"github.com/entropyio/go-entropy/common/mathutil"
+	"github.com/entropyio/go-entropy/evm"
 	"math/big"
 	"os"
 	"strings"
-
-	"github.com/entropyio/go-entropy/common/mathutil"
-	"github.com/entropyio/go-entropy/evm"
 )
 
 // Compiler contains information about the parsed source
@@ -23,7 +22,7 @@ type Compiler struct {
 	debug bool
 }
 
-// newCompiler returns a new allocated compiler.
+// NewCompiler returns a new allocated compiler.
 func NewCompiler(debug bool) *Compiler {
 	return &Compiler{
 		labels: make(map[string]int),
@@ -68,7 +67,7 @@ func (c *Compiler) Feed(ch <-chan token) {
 		prev = i
 	}
 	if c.debug {
-		fmt.Fprintln(os.Stderr, "found", len(c.labels), "labels")
+		_, _ = fmt.Fprintln(os.Stderr, "found", len(c.labels), "labels")
 	}
 }
 
@@ -89,16 +88,16 @@ func (c *Compiler) Compile() (string, []error) {
 	}
 
 	// turn the binary to hex
-	var bin string
+	var bin strings.Builder
 	for _, v := range c.binary {
 		switch v := v.(type) {
 		case evm.OpCode:
-			bin += fmt.Sprintf("%x", []byte{byte(v)})
+			bin.WriteString(fmt.Sprintf("%x", []byte{byte(v)}))
 		case []byte:
-			bin += fmt.Sprintf("%x", v)
+			bin.WriteString(fmt.Sprintf("%x", v))
 		}
 	}
-	return bin, errors
+	return bin.String(), errors
 }
 
 // next returns the next token and increments the
@@ -161,7 +160,7 @@ func (c *Compiler) compileElement(element token) error {
 		switch rvalue.typ {
 		case number:
 			// TODO figure out how to return the error properly
-			c.compileNumber(rvalue)
+			_, _ = c.compileNumber(rvalue)
 		case stringValue:
 			// strings are quoted, remove them.
 			c.pushBin(rvalue.text[1 : len(rvalue.text)-2])
@@ -227,12 +226,12 @@ func (c *Compiler) pushBin(v interface{}) {
 // isPush returns whether the string op is either any of
 // push(N).
 func isPush(op string) bool {
-	return strings.ToUpper(op) == "PUSH"
+	return strings.EqualFold(op, "PUSH")
 }
 
 // isJump returns whether the string op is jump(i)
 func isJump(op string) bool {
-	return strings.ToUpper(op) == "JUMPI" || strings.ToUpper(op) == "JUMP"
+	return strings.EqualFold(op, "JUMPI") || strings.EqualFold(op, "JUMP")
 }
 
 // toBinary converts text to a vm.OpCode

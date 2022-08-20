@@ -1,9 +1,8 @@
 package entropyapi
 
 import (
-	"sync"
-
 	"github.com/entropyio/go-entropy/common"
+	"sync"
 )
 
 type AddrLocker struct {

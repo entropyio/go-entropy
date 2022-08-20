@@ -1,4 +1,5 @@
-// +build !nacl,!js,cgo
+//go:build !nacl && !js && cgo && !gofuzz
+// +build !nacl,!js,cgo,!gofuzz
 
 package crypto
 

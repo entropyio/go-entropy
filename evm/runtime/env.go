@@ -2,24 +2,25 @@ package runtime
 
 import (
 	"github.com/entropyio/go-entropy/blockchain"
-	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/evm"
 )
 
 func NewEnv(cfg *Config) *evm.EVM {
-	context := evm.Context{
+	txContext := evm.TxContext{
+		Origin:   cfg.Origin,
+		GasPrice: cfg.GasPrice,
+	}
+	blockContext := evm.BlockContext{
 		CanTransfer: blockchain.CanTransfer,
 		Transfer:    blockchain.Transfer,
-		GetHash:     func(uint64) common.Hash { return common.Hash{} },
-
-		Origin:      cfg.Origin,
+		GetHash:     cfg.GetHashFn,
 		Coinbase:    cfg.Coinbase,
 		BlockNumber: cfg.BlockNumber,
 		Time:        cfg.Time,
 		Difficulty:  cfg.Difficulty,
 		GasLimit:    cfg.GasLimit,
-		GasPrice:    cfg.GasPrice,
+		BaseFee:     cfg.BaseFee,
 	}
 
-	return evm.NewEVM(context, cfg.State, cfg.ChainConfig, cfg.EVMConfig)
+	return evm.NewEVM(blockContext, txContext, cfg.State, cfg.ChainConfig, cfg.EVMConfig)
 }

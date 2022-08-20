@@ -2,6 +2,7 @@ package enode
 
 import (
 	"crypto/ecdsa"
+	"errors"
 	"github.com/entropyio/go-entropy/common/crypto"
 	"github.com/entropyio/go-entropy/server/p2p/enr"
 	"net"

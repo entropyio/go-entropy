@@ -3,7 +3,7 @@ package netutil
 import (
 	"time"
 
-	"github.com/entropyio/go-entropy/common/timeutil"
+	"github.com/entropyio/go-entropy/common/mclock"
 )
 
 // IPTracker predicts the external endpoint, i.e. IP address and port, of the local host
@@ -12,16 +12,16 @@ type IPTracker struct {
 	window          time.Duration
 	contactWindow   time.Duration
 	minStatements   int
-	clock           timeutil.Clock
+	clock           mclock.Clock
 	statements      map[string]ipStatement
-	contact         map[string]timeutil.AbsTime
-	lastStatementGC timeutil.AbsTime
-	lastContactGC   timeutil.AbsTime
+	contact         map[string]mclock.AbsTime
+	lastStatementGC mclock.AbsTime
+	lastContactGC   mclock.AbsTime
 }
 
 type ipStatement struct {
 	endpoint string
-	time     timeutil.AbsTime
+	time     mclock.AbsTime
 }
 
 // NewIPTracker creates an IP tracker.
@@ -37,8 +37,8 @@ func NewIPTracker(window, contactWindow time.Duration, minStatements int) *IPTra
 		contactWindow: contactWindow,
 		statements:    make(map[string]ipStatement),
 		minStatements: minStatements,
-		contact:       make(map[string]timeutil.AbsTime),
-		clock:         timeutil.System{},
+		contact:       make(map[string]mclock.AbsTime),
+		clock:         mclock.System{},
 	}
 }
 
@@ -93,7 +93,7 @@ func (it *IPTracker) AddContact(host string) {
 	}
 }
 
-func (it *IPTracker) gcStatements(now timeutil.AbsTime) {
+func (it *IPTracker) gcStatements(now mclock.AbsTime) {
 	it.lastStatementGC = now
 	cutoff := now.Add(-it.window)
 	for host, s := range it.statements {
@@ -103,7 +103,7 @@ func (it *IPTracker) gcStatements(now timeutil.AbsTime) {
 	}
 }
 
-func (it *IPTracker) gcContact(now timeutil.AbsTime) {
+func (it *IPTracker) gcContact(now mclock.AbsTime) {
 	it.lastContactGC = now
 	cutoff := now.Add(-it.contactWindow)
 	for host, ct := range it.contact {

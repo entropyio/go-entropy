@@ -7,14 +7,13 @@ import (
 	"encoding/base64"
 	"fmt"
 	"github.com/entropyio/go-entropy/common/crypto"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"github.com/entropyio/go-entropy/server/p2p/enode"
 	"github.com/entropyio/go-entropy/server/p2p/enr"
+	"golang.org/x/crypto/sha3"
 	"io"
 	"sort"
 	"strings"
-
-	"golang.org/x/crypto/sha3"
 )
 
 // Tree is a merkle tree of node records.
@@ -97,10 +96,41 @@ func (t *Tree) Nodes() []*enode.Node {
 	return nodes
 }
 
+/*
+We want to keep the UDP size below 512 bytes. The UDP size is roughly:
+UDP length = 8 + UDP payload length ( 229 )
+UPD Payload length:
+ - dns.id 2
+ - dns.flags 2
+ - dns.count.queries 2
+ - dns.count.answers 2
+ - dns.count.auth_rr 2
+ - dns.count.add_rr 2
+ - queries (query-size + 6)
+ - answers :
+ 	- dns.resp.name 2
+ 	- dns.resp.type 2
+ 	- dns.resp.class 2
+ 	- dns.resp.ttl 4
+ 	- dns.resp.len 2
+ 	- dns.txt.length 1
+ 	- dns.txt resp_data_size
+
+So the total size is roughly a fixed overhead of `39`, and the size of the
+query (domain name) and response.
+The query size is, for example, FVY6INQ6LZ33WLCHO3BPR3FH6Y.snap.mainnet.ethdisco.net (52)
+
+We also have some static data in the response, such as `enrtree-branch:`, and potentially
+splitting the response up with `" "`, leaving us with a size of roughly `400` that we need
+to stay below.
+
+The number `370` is used to have some margin for extra overhead (for example, the dns query
+may be larger - more subdomains).
+*/
 const (
-	hashAbbrev    = 16
-	maxChildren   = 300 / hashAbbrev * (13 / 8)
-	minHashLength = 12
+	hashAbbrevSize = 1 + 16*13/8          // Size of an encoded hash (plus comma)
+	maxChildren    = 370 / hashAbbrevSize // 13 children
+	minHashLength  = 12
 )
 
 // MakeTree creates a tree containing the given nodes and links.
@@ -335,7 +365,7 @@ func parseENR(e string, validSchemes enr.IdentityScheme) (entry, error) {
 		return nil, entryError{"enr", errInvalidENR}
 	}
 	var rec enr.Record
-	if err := rlputil.DecodeBytes(enc, &rec); err != nil {
+	if err := rlp.DecodeBytes(enc, &rec); err != nil {
 		return nil, entryError{"enr", err}
 	}
 	n, err := enode.New(validSchemes, &rec)

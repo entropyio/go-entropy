@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/entropyio/go-entropy/common/crypto"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"github.com/entropyio/go-entropy/server/p2p/enr"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,11 +35,11 @@ func TestSignError(t *testing.T) {
 	invalidKey := &ecdsa.PrivateKey{D: new(big.Int), PublicKey: *pubkey}
 
 	var r enr.Record
-	emptyEnc, _ := rlputil.EncodeToBytes(&r)
+	emptyEnc, _ := rlp.EncodeToBytes(&r)
 	if err := SignV4(&r, invalidKey); err == nil {
 		t.Fatal("expected error from SignV4")
 	}
-	newEnc, _ := rlputil.EncodeToBytes(&r)
+	newEnc, _ := rlp.EncodeToBytes(&r)
 	if !bytes.Equal(newEnc, emptyEnc) {
 		t.Fatal("record modified even though signing failed")
 	}

@@ -42,3 +42,42 @@ func TestGenerator(t *testing.T) {
 		}
 	}
 }
+
+func BenchmarkGenerator(b *testing.B) {
+	var input [model.BloomBitLength][model.BloomByteLength]byte
+	b.Run("empty", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			// Crunch the input through the generator and verify the result
+			gen, err := NewGenerator(model.BloomBitLength)
+			if err != nil {
+				b.Fatalf("failed to create bloombit generator: %v", err)
+			}
+			for j, bloom := range &input {
+				if err := gen.AddBloom(uint(j), bloom); err != nil {
+					b.Fatalf("bloom %d: failed to add: %v", i, err)
+				}
+			}
+		}
+	})
+	for i := 0; i < model.BloomBitLength; i++ {
+		rand.Read(input[i][:])
+	}
+	b.Run("random", func(b *testing.B) {
+		b.ReportAllocs()
+		b.ResetTimer()
+		for i := 0; i < b.N; i++ {
+			// Crunch the input through the generator and verify the result
+			gen, err := NewGenerator(model.BloomBitLength)
+			if err != nil {
+				b.Fatalf("failed to create bloombit generator: %v", err)
+			}
+			for j, bloom := range &input {
+				if err := gen.AddBloom(uint(j), bloom); err != nil {
+					b.Fatalf("bloom %d: failed to add: %v", i, err)
+				}
+			}
+		}
+	})
+}

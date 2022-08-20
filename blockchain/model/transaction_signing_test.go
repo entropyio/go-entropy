@@ -1,12 +1,11 @@
 package model
 
 import (
-	"math/big"
-	"testing"
-
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
+	"math/big"
+	"testing"
 )
 
 func TestEIP155Signing(t *testing.T) {
@@ -79,7 +78,7 @@ func TestEIP155SigningVitalik(t *testing.T) {
 		signer := NewEIP155Signer(big.NewInt(1))
 
 		var tx *Transaction
-		err := rlputil.DecodeBytes(common.Hex2Bytes(test.txRlp), &tx)
+		err := rlp.DecodeBytes(common.Hex2Bytes(test.txRlp), &tx)
 		if err != nil {
 			t.Errorf("%d: %v", i, err)
 			continue

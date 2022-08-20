@@ -2,15 +2,15 @@ package blockchain
 
 import (
 	"fmt"
-	"math/big"
-
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus"
+	"github.com/entropyio/go-entropy/consensus/misc"
 	"github.com/entropyio/go-entropy/database"
 	"github.com/entropyio/go-entropy/evm"
+	"math/big"
 )
 
 // BlockGen creates blocks for testing.
@@ -85,13 +85,18 @@ func (b *BlockGen) AddTxWithChain(bc *BlockChain, tx *model.Transaction) {
 	if b.gasPool == nil {
 		b.SetCoinbase(common.Address{})
 	}
-	b.statedb.Prepare(tx.Hash(), common.Hash{}, len(b.txs))
+	b.statedb.Prepare(tx.Hash(), len(b.txs))
 	receipt, err := ApplyTransaction(b.config, bc, &b.header.Coinbase, b.gasPool, b.statedb, b.header, tx, &b.header.GasUsed, evm.Config{})
 	if err != nil {
 		panic(err)
 	}
 	b.txs = append(b.txs, tx)
 	b.receipts = append(b.receipts, receipt)
+}
+
+// GetBalance returns the balance of the given address at the generated block.
+func (b *BlockGen) GetBalance(addr common.Address) *big.Int {
+	return b.statedb.GetBalance(addr)
 }
 
 // AddUncheckedTx forcefully adds a transaction to the block without any
@@ -106,6 +111,11 @@ func (b *BlockGen) AddUncheckedTx(tx *model.Transaction) {
 // Number returns the block number of the block being generated.
 func (b *BlockGen) Number() *big.Int {
 	return new(big.Int).Set(b.header.Number)
+}
+
+// BaseFee returns the EIP-1559 base fee of the block being generated.
+func (b *BlockGen) BaseFee() *big.Int {
+	return new(big.Int).Set(b.header.BaseFee)
 }
 
 // AddUncheckedReceipt forcefully adds a receipts to the block without a
@@ -128,6 +138,32 @@ func (b *BlockGen) TxNonce(addr common.Address) uint64 {
 
 // AddUncle adds an uncle header to the generated block.
 func (b *BlockGen) AddUncle(h *model.Header) {
+	// The uncle will have the same timestamp and auto-generated difficulty
+	h.Time = b.header.Time
+
+	var parent *model.Header
+	for i := b.i - 1; i >= 0; i-- {
+		if b.chain[i].Hash() == h.ParentHash {
+			parent = b.chain[i].Header()
+			break
+		}
+	}
+	if parent == nil {
+		panic("block has no parent.") // should never happened
+	}
+
+	chainReader := &fakeChainReader{config: b.config}
+	h.Difficulty = b.engine.CalcDifficulty(chainReader, b.header.Time, parent)
+
+	// The gas limit and price should be derived from the parent
+	h.GasLimit = parent.GasLimit
+	if b.config.IsLondon(h.Number) {
+		h.BaseFee = misc.CalcBaseFee(b.config, parent)
+		if !b.config.IsLondon(parent.Number) {
+			parentGasLimit := parent.GasLimit * config.ElasticityMultiplier
+			h.GasLimit = CalcGasLimit(parentGasLimit, parentGasLimit)
+		}
+	}
 	b.uncles = append(b.uncles, h)
 }
 
@@ -173,29 +209,43 @@ func GenerateChain(configObj *config.ChainConfig, parent *model.Block, engine co
 		configObj = config.TestChainConfig
 	}
 	blocks, receipts := make(model.Blocks, n), make([]model.Receipts, n)
-	chainreader := &fakeChainReader{config: configObj}
-	genblock := func(i int, parent *model.Block, statedb *state.StateDB) (*model.Block, model.Receipts) {
-		blockChainLog.Debugf("chain maker genblock: number=%d, parent=%X", i, parent.Hash())
+	chainReader := &fakeChainReader{config: configObj}
+	genBlock := func(i int, parent *model.Block, stateDB *state.StateDB) (*model.Block, model.Receipts) {
+		log.Debugf("chain maker genBlock: number=%d, parent=%X", i, parent.Hash())
 
-		b := &BlockGen{i: i, chain: blocks, parent: parent, statedb: statedb, config: configObj, engine: engine}
-		b.header = makeHeader(chainreader, parent, statedb, b.engine)
+		b := &BlockGen{i: i, chain: blocks, parent: parent, statedb: stateDB, config: configObj, engine: engine}
+		b.header = makeHeader(chainReader, parent, stateDB, b.engine)
 
-		// Execute any user modifications to the block and finalize it
+		// Set the difficulty for clique block. The chain maker doesn't have access
+		// to a chain, so the difficulty will be left unset (nil). Set it here to the
+		// correct value.
+		if b.header.Difficulty == nil {
+			if configObj.TerminalTotalDifficulty == nil {
+				// Clique chain
+				b.header.Difficulty = big.NewInt(2)
+			} else {
+				// Post-merge chain
+				b.header.Difficulty = big.NewInt(0)
+			}
+		}
+		// Execute any user modifications to the block
 		if gen != nil {
-			blockChainLog.Debugf("genblock callback, index=%d, blockNum=%d", i, b.Number())
+			log.Debugf("genblock callback, index=%d, blockNum=%d", i, b.header.Number)
 			gen(i, b)
 		}
 
 		if b.engine != nil {
-			// Finalize and seal the block -- TODO: set claudeContext here  -- wang
-			block, _ := b.engine.FinalizeAndAssemble(chainreader, b.header, statedb, b.txs, b.uncles, b.receipts, nil)
+			log.Debugf("commit stateDB for blockNum=%d", b.header.Number)
+
+			// Finalize and seal the block -- TODO: set claudeContext here
+			block, _ := b.engine.FinalizeAndAssemble(chainReader, b.header, stateDB, b.txs, b.uncles, b.receipts)
 
 			// Write state changes to db
-			root, err := statedb.Commit(configObj.IsEIP158(b.header.Number))
+			root, err := stateDB.Commit(false)
 			if err != nil {
 				panic(fmt.Sprintf("state write error: %v", err))
 			}
-			if err := statedb.Database().TrieDB().Commit(root, false); err != nil {
+			if err := stateDB.Database().TrieDB().Commit(root, false, nil); err != nil {
 				panic(fmt.Sprintf("trie write error: %v", err))
 			}
 			return block, b.receipts
@@ -203,29 +253,30 @@ func GenerateChain(configObj *config.ChainConfig, parent *model.Block, engine co
 		return nil, nil
 	}
 	for i := 0; i < n; i++ {
-		statedb, err := state.New(parent.Root(), state.NewDatabase(db))
+		statedb, err := state.New(parent.Root(), state.NewDatabase(db), nil)
 		if err != nil {
 			panic(err)
 		}
-		block, receipt := genblock(i, parent, statedb)
+		block, receipt := genBlock(i, parent, statedb)
 		blocks[i] = block
 		receipts[i] = receipt
 		parent = block
 	}
-	blockChainLog.Debug("chain maker GenerateChain", len(blocks), blocks, receipts)
+	log.Debugf("chain maker GenerateChain. blocks:%d, receipts:%d, nodes:%d", len(blocks), len(receipts), n)
 	return blocks, receipts
 }
 
 func makeHeader(chain consensus.ChainReader, parent *model.Block, state *state.StateDB, engine consensus.Engine) *model.Header {
+	log.Debugf("chain maker makeHeader. parent:%d", parent.NumberU64(), engine, state)
+
 	var time uint64
 	if parent.Time() == 0 {
 		time = 10
 	} else {
 		time = parent.Time() + 10 // block time is fixed at 10 seconds
 	}
-
-	return &model.Header{
-		Root:       state.IntermediateRoot(chain.Config().IsHomestead(parent.Number())),
+	header := &model.Header{
+		Root:       state.IntermediateRoot(false),
 		ParentHash: parent.Hash(),
 		Coinbase:   parent.Coinbase(),
 		Difficulty: engine.CalcDifficulty(chain, time, &model.Header{
@@ -234,17 +285,24 @@ func makeHeader(chain consensus.ChainReader, parent *model.Block, state *state.S
 			Difficulty: parent.Difficulty(),
 			UncleHash:  parent.UncleHash(),
 		}),
-		GasLimit: CalcGasLimit(parent, parent.GasLimit(), parent.GasLimit()),
+		GasLimit: parent.GasLimit(),
 		Number:   new(big.Int).Add(parent.Number(), common.Big1),
 		Time:     time,
-
-		ClaudeCtxHash: &model.ClaudeContextHash{},
+		// ClaudeCtxHash: &model.ClaudeContextHash{},
 	}
+	if chain.Config().IsLondon(header.Number) {
+		header.BaseFee = misc.CalcBaseFee(chain.Config(), parent.Header())
+		if !chain.Config().IsLondon(parent.Number()) {
+			parentGasLimit := parent.GasLimit() * config.ElasticityMultiplier
+			header.GasLimit = CalcGasLimit(parentGasLimit, parentGasLimit)
+		}
+	}
+	return header
 }
 
 // makeHeaderChain creates a deterministic chain of headers rooted at parent.
 func makeHeaderChain(parent *model.Header, n int, engine consensus.Engine, db database.Database, seed int) []*model.Header {
-	blockChainLog.Debug("chain maker makeHeaderChain", n, parent, engine, seed)
+	log.Debug("chain maker makeHeaderChain", n, parent, engine, seed)
 	blocks := makeBlockChain(model.NewBlockWithHeader(parent), n, engine, db, seed)
 	headers := make([]*model.Header, len(blocks))
 	for i, block := range blocks {
@@ -255,7 +313,7 @@ func makeHeaderChain(parent *model.Header, n int, engine consensus.Engine, db da
 
 // makeBlockChain creates a deterministic chain of blocks rooted at parent.
 func makeBlockChain(parent *model.Block, n int, engine consensus.Engine, db database.Database, seed int) []*model.Block {
-	blockChainLog.Debug("chain maker makeBlockChain", n, parent, engine, seed)
+	log.Debug("chain maker makeBlockChain", n, parent, engine, seed)
 	blocks, _ := GenerateChain(config.TestChainConfig, parent, engine, db, n, func(i int, b *BlockGen) {
 		b.SetCoinbase(common.Address{0: byte(seed), 19: byte(i)})
 	})
@@ -271,8 +329,9 @@ func (cr *fakeChainReader) Config() *config.ChainConfig {
 	return cr.config
 }
 
-func (cr *fakeChainReader) CurrentHeader() *model.Header                            { return nil }
-func (cr *fakeChainReader) GetHeaderByNumber(number uint64) *model.Header           { return nil }
-func (cr *fakeChainReader) GetHeaderByHash(hash common.Hash) *model.Header          { return nil }
-func (cr *fakeChainReader) GetHeader(hash common.Hash, number uint64) *model.Header { return nil }
-func (cr *fakeChainReader) GetBlock(hash common.Hash, number uint64) *model.Block   { return nil }
+func (cr *fakeChainReader) CurrentHeader() *model.Header                { return nil }
+func (cr *fakeChainReader) GetHeaderByNumber(uint64) *model.Header      { return nil }
+func (cr *fakeChainReader) GetHeaderByHash(common.Hash) *model.Header   { return nil }
+func (cr *fakeChainReader) GetHeader(common.Hash, uint64) *model.Header { return nil }
+func (cr *fakeChainReader) GetBlock(common.Hash, uint64) *model.Block   { return nil }
+func (cr *fakeChainReader) GetTd(common.Hash, uint64) *big.Int          { return nil }

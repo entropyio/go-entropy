@@ -3,17 +3,15 @@ package filters
 import (
 	"context"
 	"fmt"
-	"sync"
-	"time"
-
 	"github.com/entropyio/go-entropy"
-
 	"github.com/entropyio/go-entropy/blockchain"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/event"
 	"github.com/entropyio/go-entropy/rpc"
+	"sync"
+	"time"
 )
 
 // Type determines the kind of filter and is used to put the filter in to
@@ -39,7 +37,6 @@ const (
 )
 
 const (
-
 	// txChanSize is the size of channel listening to NewTxsEvent.
 	// The number is referenced from the size of tx pool.
 	txChanSize = 4096
@@ -55,7 +52,7 @@ type subscription struct {
 	id        rpc.ID
 	typ       Type
 	created   time.Time
-	logsCrit  entropy.FilterQuery
+	logsCrit  entropyio.FilterQuery
 	logs      chan []*model.Log
 	hashes    chan []common.Hash
 	headers   chan *model.Header
@@ -170,7 +167,7 @@ func (es *EventSystem) subscribe(sub *subscription) *Subscription {
 // SubscribeLogs creates a subscription that will write all logs matching the
 // given criteria to the given logs channel. Default value for the from and to
 // block is "latest". If the fromBlock > toBlock an error is returned.
-func (es *EventSystem) SubscribeLogs(crit entropy.FilterQuery, logs chan []*model.Log) (*Subscription, error) {
+func (es *EventSystem) SubscribeLogs(crit entropyio.FilterQuery, logs chan []*model.Log) (*Subscription, error) {
 	var from, to rpc.BlockNumber
 	if crit.FromBlock == nil {
 		from = rpc.LatestBlockNumber
@@ -208,7 +205,7 @@ func (es *EventSystem) SubscribeLogs(crit entropy.FilterQuery, logs chan []*mode
 
 // subscribeMinedPendingLogs creates a subscription that returned mined and
 // pending logs that match the given criteria.
-func (es *EventSystem) subscribeMinedPendingLogs(crit entropy.FilterQuery, logs chan []*model.Log) *Subscription {
+func (es *EventSystem) subscribeMinedPendingLogs(crit entropyio.FilterQuery, logs chan []*model.Log) *Subscription {
 	sub := &subscription{
 		id:        rpc.NewID(),
 		typ:       MinedAndPendingLogsSubscription,
@@ -225,7 +222,7 @@ func (es *EventSystem) subscribeMinedPendingLogs(crit entropy.FilterQuery, logs 
 
 // subscribeLogs creates a subscription that will write all logs matching the
 // given criteria to the given logs channel.
-func (es *EventSystem) subscribeLogs(crit entropy.FilterQuery, logs chan []*model.Log) *Subscription {
+func (es *EventSystem) subscribeLogs(crit entropyio.FilterQuery, logs chan []*model.Log) *Subscription {
 	sub := &subscription{
 		id:        rpc.NewID(),
 		typ:       LogsSubscription,
@@ -240,9 +237,9 @@ func (es *EventSystem) subscribeLogs(crit entropy.FilterQuery, logs chan []*mode
 	return es.subscribe(sub)
 }
 
-// subscribePendingLogs creates a subscription that writes transaction hashes for
+// subscribePendingLogs creates a subscription that writes contract event logs for
 // transactions that enter the transaction pool.
-func (es *EventSystem) subscribePendingLogs(crit entropy.FilterQuery, logs chan []*model.Log) *Subscription {
+func (es *EventSystem) subscribePendingLogs(crit entropyio.FilterQuery, logs chan []*model.Log) *Subscription {
 	sub := &subscription{
 		id:        rpc.NewID(),
 		typ:       PendingLogsSubscription,
@@ -361,11 +358,11 @@ func (es *EventSystem) lightFilterNewHead(newHeader *model.Header, callBack func
 	for oldh.Hash() != newh.Hash() {
 		if oldh.Number.Uint64() >= newh.Number.Uint64() {
 			oldHeaders = append(oldHeaders, oldh)
-			oldh = mapper.ReadHeader(es.backend.ChainDb(), oldh.ParentHash, oldh.Number.Uint64()-1)
+			oldh = rawdb.ReadHeader(es.backend.ChainDb(), oldh.ParentHash, oldh.Number.Uint64()-1)
 		}
 		if oldh.Number.Uint64() < newh.Number.Uint64() {
 			newHeaders = append(newHeaders, newh)
-			newh = mapper.ReadHeader(es.backend.ChainDb(), newh.ParentHash, newh.Number.Uint64()-1)
+			newh = rawdb.ReadHeader(es.backend.ChainDb(), newh.ParentHash, newh.Number.Uint64()-1)
 			if newh == nil {
 				// happens when CHT syncing, nothing to do
 				newh = oldh

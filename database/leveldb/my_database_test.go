@@ -6,9 +6,9 @@ import (
 )
 
 func newTestLDBMy() (*Database, func()) {
-	dirname := "/Users/wangzhen/Desktop/blockchain/test_entropy"
+	dirname := "./testData"
 	fmt.Println("dirname: ", dirname)
-	db, err := New(dirname, 0, 0, "test")
+	db, err := New(dirname, 0, 0, "test", false)
 	if err != nil {
 		panic("failed to create test database: " + err.Error())
 	}

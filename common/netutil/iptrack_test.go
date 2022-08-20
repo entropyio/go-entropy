@@ -2,11 +2,10 @@ package netutil
 
 import (
 	"fmt"
+	"github.com/entropyio/go-entropy/common/mclock"
 	mrand "math/rand"
 	"testing"
 	"time"
-
-	"github.com/entropyio/go-entropy/common/mclock"
 )
 
 const (

@@ -3,13 +3,11 @@ package model
 import (
 	"encoding/json"
 	"fmt"
-	"reflect"
-	"testing"
-
 	"github.com/davecgh/go-spew/spew"
-
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/hexutil"
+	"reflect"
+	"testing"
 )
 
 var unmarshalLogTests = map[string]struct {

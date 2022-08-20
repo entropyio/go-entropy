@@ -1,23 +1,19 @@
 /*
-
    The mkalloc tool creates the genesis allocation constants in genesis_alloc.go
    It outputs a const declaration that contains an RLP-encoded list of (address, balance) tuples.
-
        go run mkalloc.go genesis.json
-
 */
 package main
 
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/entropyio/go-entropy/blockchain"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"math/big"
 	"os"
 	"sort"
 	"strconv"
-
-	"github.com/entropyio/go-entropy/blockchain/genesis"
-	"github.com/entropyio/go-entropy/common/rlputil"
 )
 
 type allocItem struct{ Addr, Balance *big.Int }
@@ -28,7 +24,7 @@ func (a allocList) Len() int           { return len(a) }
 func (a allocList) Less(i, j int) bool { return a[i].Addr.Cmp(a[j].Addr) < 0 }
 func (a allocList) Swap(i, j int)      { a[i], a[j] = a[j], a[i] }
 
-func makelist(g *genesis.Genesis) allocList {
+func makelist(g *blockchain.Genesis) allocList {
 	a := make(allocList, 0, len(g.Alloc))
 	for addr, account := range g.Alloc {
 		if len(account.Storage) > 0 || len(account.Code) > 0 || account.Nonce != 0 {
@@ -41,9 +37,9 @@ func makelist(g *genesis.Genesis) allocList {
 	return a
 }
 
-func makealloc(g *genesis.Genesis) string {
+func makealloc(g *blockchain.Genesis) string {
 	a := makelist(g)
-	data, err := rlputil.EncodeToBytes(a)
+	data, err := rlp.EncodeToBytes(a)
 	if err != nil {
 		panic(err)
 	}
@@ -56,7 +52,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	g := new(genesis.Genesis)
+	g := new(blockchain.Genesis)
 	file, err := os.Open(os.Args[1])
 	if err != nil {
 		panic(err)

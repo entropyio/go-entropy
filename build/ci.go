@@ -102,7 +102,7 @@ var (
 	// A debian package is created for all executables listed here.
 
 	debEthereum = debPackage{
-		Name:        "ethereum",
+		Name:        "entropy",
 		Version:     params.Version,
 		Executables: debExecutables,
 	}
@@ -536,7 +536,7 @@ func isUnstableBuild(env build.Environment) bool {
 }
 
 type debPackage struct {
-	Name        string          // the name of the Debian package to produce, e.g. "ethereum"
+	Name        string          // the name of the Debian package to produce, e.g. "entropy"
 	Version     string          // the clean version of the debPackage, e.g. 1.8.12, without any metadata
 	Executables []debExecutable // executables to be included in the package
 }

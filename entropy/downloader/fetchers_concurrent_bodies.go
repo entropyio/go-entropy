@@ -1,0 +1,87 @@
+package downloader
+
+import (
+	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/entropy/protocols/ent"
+	"time"
+)
+
+// bodyQueue implements typedQueue and is a type adapter between the generic
+// concurrent fetcher and the downloader.
+type bodyQueue Downloader
+
+// waker returns a notification channel that gets pinged in case more body
+// fetches have been queued up, so the fetcher might assign it to idle peers.
+func (q *bodyQueue) waker() chan bool {
+	return q.queue.blockWakeCh
+}
+
+// pending returns the number of bodies that are currently queued for fetching
+// by the concurrent downloader.
+func (q *bodyQueue) pending() int {
+	return q.queue.PendingBodies()
+}
+
+// capacity is responsible for calculating how many bodies a particular peer is
+// estimated to be able to retrieve within the alloted round trip time.
+func (q *bodyQueue) capacity(peer *peerConnection, rtt time.Duration) int {
+	return peer.BodyCapacity(rtt)
+}
+
+// updateCapacity is responsible for updating how many bodies a particular peer
+// is estimated to be able to retrieve in a unit time.
+func (q *bodyQueue) updateCapacity(peer *peerConnection, items int, span time.Duration) {
+	peer.UpdateBodyRate(items, span)
+}
+
+// reserve is responsible for allocating a requested number of pending bodies
+// from the download queue to the specified peer.
+func (q *bodyQueue) reserve(peer *peerConnection, items int) (*fetchRequest, bool, bool) {
+	return q.queue.ReserveBodies(peer, items)
+}
+
+// unreserve is resposible for removing the current body retrieval allocation
+// assigned to a specific peer and placing it back into the pool to allow
+// reassigning to some other peer.
+func (q *bodyQueue) unreserve(peer string) int {
+	fails := q.queue.ExpireBodies(peer)
+	if fails > 2 {
+		log.Debug("Body delivery timed out", "peer", peer)
+	} else {
+		log.Debug("Body delivery stalling", "peer", peer)
+	}
+	return fails
+}
+
+// request is responsible for converting a generic fetch request into a body
+// one and sending it to the remote peer for fulfillment.
+func (q *bodyQueue) request(peer *peerConnection, req *fetchRequest, resCh chan *ent.Response) (*ent.Request, error) {
+	log.Debug("Requesting new batch of bodies", "count", len(req.Headers), "from", req.Headers[0].Number)
+	if q.bodyFetchHook != nil {
+		q.bodyFetchHook(req.Headers)
+	}
+
+	hashes := make([]common.Hash, 0, len(req.Headers))
+	for _, header := range req.Headers {
+		hashes = append(hashes, header.Hash())
+	}
+	return peer.peer.RequestBodies(hashes, resCh)
+}
+
+// deliver is responsible for taking a generic response packet from the concurrent
+// fetcher, unpacking the body data and delivering it to the downloader's queue.
+func (q *bodyQueue) deliver(peer *peerConnection, packet *ent.Response) (int, error) {
+	txs, uncles := packet.Res.(*ent.BlockBodiesPacket).Unpack()
+	hashsets := packet.Meta.([][]common.Hash) // {txs hashes, uncle hashes}
+
+	accepted, err := q.queue.DeliverBodies(peer.id, txs, hashsets[0], uncles, hashsets[1])
+	switch {
+	case err == nil && len(txs) == 0:
+		log.Debug("Requested bodies delivered")
+	case err == nil:
+		log.Debug("Delivered new batch of bodies", "count", len(txs), "accepted", accepted)
+	default:
+		log.Debug("Failed to deliver retrieved bodies", "err", err)
+	}
+	return accepted, err
+}

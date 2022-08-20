@@ -2,8 +2,6 @@ package miner
 
 import (
 	"fmt"
-	"sync/atomic"
-
 	"github.com/entropyio/go-entropy/blockchain"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/blockchain/state"
@@ -15,12 +13,14 @@ import (
 	"github.com/entropyio/go-entropy/event"
 	"github.com/entropyio/go-entropy/logger"
 	"math/big"
+	"sync"
 	"time"
 )
 
 var log = logger.NewLogger("[miner]")
 
-// Backend wraps all methods required for mining.
+// Backend wraps all methods required for mining. Only full node is capable
+// to offer all the functions here.
 type Backend interface {
 	BlockChain() *blockchain.BlockChain
 	TxPool() *blockchain.TxPool
@@ -30,6 +30,7 @@ type Backend interface {
 type Config struct {
 	EntropyBase common.Address `toml:",omitempty"` // Public address for block mining rewards (default = first account)
 	Notify      []string       `toml:",omitempty"` // HTTP URL list to be notified of new work packages(only useful in ethash).
+	NotifyFull  bool           `toml:",omitempty"` // Notify with pending block headers instead of work packages
 	ExtraData   hexutil.Bytes  `toml:",omitempty"` // Block extra data set by the miner
 	GasFloor    uint64         // Target gas floor for mined blocks.
 	GasCeil     uint64         // Target gas ceiling for mined blocks.
@@ -48,22 +49,24 @@ type Miner struct {
 	eth      Backend
 	engine   consensus.Engine
 	exitCh   chan struct{}
+	startCh  chan common.Address
+	stopCh   chan struct{}
 
-	canStart    int32 // can start indicates whether we can start the mining operation
-	shouldStart int32 // should start indicates whether we should start after sync
+	wg sync.WaitGroup
 }
 
-func New(eth Backend, config *Config, chainConfig *config.ChainConfig, mux *event.TypeMux, engine consensus.Engine, isLocalBlock func(block *model.Block) bool) *Miner {
+func New(eth Backend, config *Config, chainConfig *config.ChainConfig, mux *event.TypeMux, engine consensus.Engine, isLocalBlock func(header *model.Header) bool) *Miner {
 	miner := &Miner{
-		eth:      eth,
-		mux:      mux,
-		engine:   engine,
-		exitCh:   make(chan struct{}),
-		worker:   newWorker(config, chainConfig, engine, eth, mux, isLocalBlock, true),
-		canStart: 1,
+		eth:     eth,
+		mux:     mux,
+		engine:  engine,
+		exitCh:  make(chan struct{}),
+		startCh: make(chan common.Address),
+		stopCh:  make(chan struct{}),
+		worker:  newWorker(config, chainConfig, engine, eth, mux, isLocalBlock, true),
 	}
+	miner.wg.Add(1)
 	go miner.update()
-
 	return miner
 }
 
@@ -72,35 +75,62 @@ func New(eth Backend, config *Config, chainConfig *config.ChainConfig, mux *even
 // the loop is exited. This to prevent a major security vuln where external parties can DOS you with blocks
 // and halt your mining operation for as long as the DOS continues.
 func (miner *Miner) update() {
-	events := miner.mux.Subscribe(downloader.StartEvent{}, downloader.DoneEvent{}, downloader.FailedEvent{})
-	defer events.Unsubscribe()
+	defer miner.wg.Done()
 
+	events := miner.mux.Subscribe(downloader.StartEvent{}, downloader.DoneEvent{}, downloader.FailedEvent{})
+	defer func() {
+		if !events.Closed() {
+			events.Unsubscribe()
+		}
+	}()
+
+	shouldStart := false
+	canStart := true
+	dlEventCh := events.Chan()
 	for {
 		select {
-		case ev := <-events.Chan():
+		case ev := <-dlEventCh:
 			if ev == nil {
-				return
+				// Unsubscription done, stop listening
+				dlEventCh = nil
+				continue
 			}
 			switch ev.Data.(type) {
 			case downloader.StartEvent:
-				atomic.StoreInt32(&miner.canStart, 0)
-				if miner.Mining() {
-					miner.Stop()
-					atomic.StoreInt32(&miner.shouldStart, 1)
+				wasMining := miner.Mining()
+				miner.worker.stop()
+				canStart = false
+				if wasMining {
+					// Resume mining after sync was finished
+					shouldStart = true
 					log.Info("Mining aborted due to sync")
 				}
-			case downloader.DoneEvent, downloader.FailedEvent:
-				shouldStart := atomic.LoadInt32(&miner.shouldStart) == 1
-
-				atomic.StoreInt32(&miner.canStart, 1)
-				atomic.StoreInt32(&miner.shouldStart, 0)
+			case downloader.FailedEvent:
+				canStart = true
 				if shouldStart {
-					miner.Start(miner.coinbase)
+					miner.SetEntropyBase(miner.coinbase)
+					miner.worker.start()
 				}
-				// stop immediately and ignore all further pending events
-				return
+			case downloader.DoneEvent:
+				canStart = true
+				if shouldStart {
+					miner.SetEntropyBase(miner.coinbase)
+					miner.worker.start()
+				}
+				// Stop reacting to downloader events
+				events.Unsubscribe()
 			}
+		case addr := <-miner.startCh:
+			miner.SetEntropyBase(addr)
+			if canStart {
+				miner.worker.start()
+			}
+			shouldStart = true
+		case <-miner.stopCh:
+			shouldStart = false
+			miner.worker.stop()
 		case <-miner.exitCh:
+			miner.worker.close()
 			return
 		}
 	}
@@ -108,32 +138,24 @@ func (miner *Miner) update() {
 
 func (miner *Miner) Start(coinbase common.Address) {
 	log.Warningf("miner start with coinbase : %X", coinbase)
-	atomic.StoreInt32(&miner.shouldStart, 1)
-	miner.SetEntropyBase(coinbase)
-
-	if atomic.LoadInt32(&miner.canStart) == 0 {
-		log.Info("Network syncing, will start miner afterwards")
-		return
-	}
-	miner.worker.start()
+	miner.startCh <- coinbase
 }
 
 func (miner *Miner) Stop() {
 	log.Warningf("miner stop at: 0x%x", miner.coinbase)
-	miner.worker.stop()
-	atomic.StoreInt32(&miner.shouldStart, 0)
+	miner.stopCh <- struct{}{}
 }
 
 func (miner *Miner) Close() {
-	miner.worker.close()
 	close(miner.exitCh)
+	miner.wg.Wait()
 }
 
 func (miner *Miner) Mining() bool {
 	return miner.worker.isRunning()
 }
 
-func (miner *Miner) HashRate() uint64 {
+func (miner *Miner) Hashrate() uint64 {
 	if pow, ok := miner.engine.(consensus.PoW); ok {
 		return uint64(pow.Hashrate())
 	}
@@ -149,8 +171,8 @@ func (miner *Miner) SetExtra(extra []byte) error {
 }
 
 // SetRecommitInterval sets the interval for sealing work resubmitting.
-func (self *Miner) SetRecommitInterval(interval time.Duration) {
-	self.worker.setRecommitInterval(interval)
+func (miner *Miner) SetRecommitInterval(interval time.Duration) {
+	miner.worker.setRecommitInterval(interval)
 }
 
 // Pending returns the currently pending block and associated state.
@@ -167,13 +189,65 @@ func (miner *Miner) PendingBlock() *model.Block {
 	return miner.worker.pendingBlock()
 }
 
+// PendingBlockAndReceipts returns the currently pending block and corresponding receipts.
+func (miner *Miner) PendingBlockAndReceipts() (*model.Block, model.Receipts) {
+	return miner.worker.pendingBlockAndReceipts()
+}
+
 func (miner *Miner) SetEntropyBase(addr common.Address) {
 	miner.coinbase = addr
 	miner.worker.setEntropyBase(addr)
+}
+
+// SetGasCeil sets the gaslimit to strive for when mining blocks post 1559.
+// For pre-1559 blocks, it sets the ceiling.
+func (miner *Miner) SetGasCeil(ceil uint64) {
+	miner.worker.setGasCeil(ceil)
+}
+
+// EnablePreseal turns on the preseal mining feature. It's enabled by default.
+// Note this function shouldn't be exposed to API, it's unnecessary for users
+// (miners) to actually know the underlying detail. It's only for outside project
+// which uses this library.
+func (miner *Miner) EnablePreseal() {
+	miner.worker.enablePreseal()
+}
+
+// DisablePreseal turns off the preseal mining feature. It's necessary for some
+// fake consensus engine which can seal blocks instantaneously.
+// Note this function shouldn't be exposed to API, it's unnecessary for users
+// (miners) to actually know the underlying detail. It's only for outside project
+// which uses this library.
+func (miner *Miner) DisablePreseal() {
+	miner.worker.disablePreseal()
 }
 
 // SubscribePendingLogs starts delivering logs from pending transactions
 // to the given channel.
 func (miner *Miner) SubscribePendingLogs(ch chan<- []*model.Log) event.Subscription {
 	return miner.worker.pendingLogsFeed.Subscribe(ch)
+}
+
+// GetSealingBlockAsync requests to generate a sealing block according to the
+// given parameters. Regardless of whether the generation is successful or not,
+// there is always a result that will be returned through the result channel.
+// The difference is that if the execution fails, the returned result is nil
+// and the concrete error is dropped silently.
+func (miner *Miner) GetSealingBlockAsync(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, noTxs bool) (chan *model.Block, error) {
+	resCh, _, err := miner.worker.getSealingBlock(parent, timestamp, coinbase, random, noTxs)
+	if err != nil {
+		return nil, err
+	}
+	return resCh, nil
+}
+
+// GetSealingBlockSync creates a sealing block according to the given parameters.
+// If the generation is failed or the underlying work is already closed, an error
+// will be returned.
+func (miner *Miner) GetSealingBlockSync(parent common.Hash, timestamp uint64, coinbase common.Address, random common.Hash, noTxs bool) (*model.Block, error) {
+	resCh, errCh, err := miner.worker.getSealingBlock(parent, timestamp, coinbase, random, noTxs)
+	if err != nil {
+		return nil, err
+	}
+	return <-resCh, <-errCh
 }

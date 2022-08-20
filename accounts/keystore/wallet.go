@@ -1,27 +1,26 @@
 package keystore
 
 import (
-	"math/big"
-
 	"github.com/entropyio/go-entropy"
 	"github.com/entropyio/go-entropy/accounts"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common/crypto"
+	"math/big"
 )
 
-// keystoreWallet implements the account.Wallet interface for the original
+// keystoreWallet implements the accounts.Wallet interface for the original
 // keystore.
 type keystoreWallet struct {
 	account  accounts.Account // Single account contained in this wallet
 	keystore *KeyStore        // Keystore where the account originates from
 }
 
-// URL implements account.Wallet, returning the URL of the account within.
+// URL implements accounts.Wallet, returning the URL of the account within.
 func (w *keystoreWallet) URL() accounts.URL {
 	return w.account.URL
 }
 
-// Status implements account.Wallet, returning whether the account held by the
+// Status implements accounts.Wallet, returning whether the account held by the
 // keystore wallet is unlocked or not.
 func (w *keystoreWallet) Status() (string, error) {
 	w.keystore.mu.RLock()
@@ -33,35 +32,35 @@ func (w *keystoreWallet) Status() (string, error) {
 	return "Locked", nil
 }
 
-// Open implements account.Wallet, but is a noop for plain wallets since there
-// is no connection or decryption step necessary to access the list of account.
+// Open implements accounts.Wallet, but is a noop for plain wallets since there
+// is no connection or decryption step necessary to access the list of accounts.
 func (w *keystoreWallet) Open(passphrase string) error { return nil }
 
-// Close implements account.Wallet, but is a noop for plain wallets since there
+// Close implements accounts.Wallet, but is a noop for plain wallets since there
 // is no meaningful open operation.
 func (w *keystoreWallet) Close() error { return nil }
 
-// Accounts implements account.Wallet, returning an account list consisting of
-// a single account that the plain kestore wallet contains.
+// Accounts implements accounts.Wallet, returning an account list consisting of
+// a single account that the plain keystore wallet contains.
 func (w *keystoreWallet) Accounts() []accounts.Account {
 	return []accounts.Account{w.account}
 }
 
-// Contains implements account.Wallet, returning whether a particular account is
+// Contains implements accounts.Wallet, returning whether a particular account is
 // or is not wrapped by this wallet instance.
 func (w *keystoreWallet) Contains(accountObj accounts.Account) bool {
 	return accountObj.Address == w.account.Address && (accountObj.URL == (accounts.URL{}) || accountObj.URL == w.account.URL)
 }
 
-// Derive implements account.Wallet, but is a noop for plain wallets since there
-// is no notion of hierarchical account derivation for plain keystore account.
+// Derive implements accounts.Wallet, but is a noop for plain wallets since there
+// is no notion of hierarchical account derivation for plain keystore accounts.
 func (w *keystoreWallet) Derive(path accounts.DerivationPath, pin bool) (accounts.Account, error) {
 	return accounts.Account{}, accounts.ErrNotSupported
 }
 
 // SelfDerive implements accounts.Wallet, but is a noop for plain wallets since
 // there is no notion of hierarchical account derivation for plain keystore accounts.
-func (w *keystoreWallet) SelfDerive(bases []accounts.DerivationPath, chain entropy.ChainStateReader) {
+func (w *keystoreWallet) SelfDerive(bases []accounts.DerivationPath, chain entropyio.ChainStateReader) {
 }
 
 // signHash attempts to sign the given hash with
@@ -92,14 +91,16 @@ func (w *keystoreWallet) SignDataWithPassphrase(accountObj accounts.Account, pas
 	return w.keystore.SignHashWithPassphrase(accountObj, passphrase, crypto.Keccak256(data))
 }
 
+// SignText implements accounts.Wallet, attempting to sign the hash of
+// the given text with the given account.
 func (w *keystoreWallet) SignText(accountObj accounts.Account, text []byte) ([]byte, error) {
 	return w.signHash(accountObj, accounts.TextHash(text))
 }
 
 // SignTextWithPassphrase implements accounts.Wallet, attempting to sign the
-// given hash with the given account using passphrase as extra authentication.
+// hash of the given text with the given account using passphrase as extra authentication.
 func (w *keystoreWallet) SignTextWithPassphrase(accountObj accounts.Account, passphrase string, text []byte) ([]byte, error) {
-	// Make sure the requested accounts is contained within
+	// Make sure the requested account is contained within
 	if !w.Contains(accountObj) {
 		return nil, accounts.ErrUnknownAccount
 	}
@@ -120,8 +121,8 @@ func (w *keystoreWallet) SignTx(accountObj accounts.Account, tx *model.Transacti
 	return w.keystore.SignTx(accountObj, tx, chainID)
 }
 
-// SignTxWithPassphrase implements account.Wallet, attempting to sign the given
-// transaction with the given accounts using passphrase as extra authentication.
+// SignTxWithPassphrase implements accounts.Wallet, attempting to sign the given
+// transaction with the given account using passphrase as extra authentication.
 func (w *keystoreWallet) SignTxWithPassphrase(accountObj accounts.Account, passphrase string, tx *model.Transaction, chainID *big.Int) (*model.Transaction, error) {
 	// Make sure the requested account is contained within
 	if !w.Contains(accountObj) {

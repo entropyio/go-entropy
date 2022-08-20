@@ -2,29 +2,27 @@ package downloader
 
 import (
 	"context"
-	"sync"
-
 	"github.com/entropyio/go-entropy"
-
 	"github.com/entropyio/go-entropy/event"
 	"github.com/entropyio/go-entropy/rpc"
+	"sync"
 )
 
-// PublicDownloaderAPI provides an API which gives information about the current synchronisation status.
+// DownloaderAPI provides an API which gives information about the current synchronisation status.
 // It offers only methods that operates on data that can be available to anyone without security risks.
-type PublicDownloaderAPI struct {
+type DownloaderAPI struct {
 	d                         *Downloader
 	mux                       *event.TypeMux
 	installSyncSubscription   chan chan interface{}
 	uninstallSyncSubscription chan *uninstallSyncSubscriptionRequest
 }
 
-// NewPublicDownloaderAPI create a new PublicDownloaderAPI. The API has an internal event loop that
+// NewDownloaderAPI create a new DownloaderAPI. The API has an internal event loop that
 // listens for events from the downloader through the global event mux. In case it receives one of
 // these events it broadcasts it to all syncing subscriptions that are installed through the
 // installSyncSubscription channel.
-func NewPublicDownloaderAPI(d *Downloader, m *event.TypeMux) *PublicDownloaderAPI {
-	api := &PublicDownloaderAPI{
+func NewDownloaderAPI(d *Downloader, m *event.TypeMux) *DownloaderAPI {
+	api := &DownloaderAPI{
 		d:                         d,
 		mux:                       m,
 		installSyncSubscription:   make(chan chan interface{}),
@@ -38,7 +36,7 @@ func NewPublicDownloaderAPI(d *Downloader, m *event.TypeMux) *PublicDownloaderAP
 
 // eventLoop runs a loop until the event mux closes. It will install and uninstall new
 // sync subscriptions and broadcasts sync status updates to the installed sync subscriptions.
-func (api *PublicDownloaderAPI) eventLoop() {
+func (api *DownloaderAPI) eventLoop() {
 	var (
 		sub               = api.mux.Subscribe(StartEvent{}, DoneEvent{}, FailedEvent{})
 		syncSubscriptions = make(map[chan interface{}]struct{})
@@ -75,7 +73,7 @@ func (api *PublicDownloaderAPI) eventLoop() {
 }
 
 // Syncing provides information when this nodes starts synchronising with the Entropy network and when it's finished.
-func (api *PublicDownloaderAPI) Syncing(ctx context.Context) (*rpc.Subscription, error) {
+func (api *DownloaderAPI) Syncing(ctx context.Context) (*rpc.Subscription, error) {
 	notifier, supported := rpc.NotifierFromContext(ctx)
 	if !supported {
 		return &rpc.Subscription{}, rpc.ErrNotificationsUnsupported
@@ -106,8 +104,8 @@ func (api *PublicDownloaderAPI) Syncing(ctx context.Context) (*rpc.Subscription,
 
 // SyncingResult provides information about the current synchronisation status for this node.
 type SyncingResult struct {
-	Syncing bool                 `json:"syncing"`
-	Status  entropy.SyncProgress `json:"status"`
+	Syncing bool                   `json:"syncing"`
+	Status  entropyio.SyncProgress `json:"status"`
 }
 
 // uninstallSyncSubscriptionRequest uninstalles a syncing subscription in the API event loop.
@@ -118,9 +116,9 @@ type uninstallSyncSubscriptionRequest struct {
 
 // SyncStatusSubscription represents a syncing subscription.
 type SyncStatusSubscription struct {
-	api       *PublicDownloaderAPI // register subscription in event loop of this api instance
-	c         chan interface{}     // channel where events are broadcasted to
-	unsubOnce sync.Once            // make sure unsubscribe logic is executed once
+	api       *DownloaderAPI   // register subscription in event loop of this api instance
+	c         chan interface{} // channel where events are broadcasted to
+	unsubOnce sync.Once        // make sure unsubscribe logic is executed once
 }
 
 // Unsubscribe uninstalls the subscription from the DownloadAPI event loop.
@@ -144,8 +142,8 @@ func (s *SyncStatusSubscription) Unsubscribe() {
 }
 
 // SubscribeSyncStatus creates a subscription that will broadcast new synchronisation updates.
-// The given channel must receive interface values, the result can either
-func (api *PublicDownloaderAPI) SubscribeSyncStatus(status chan interface{}) *SyncStatusSubscription {
+// The given channel must receive interface values, the result can either.
+func (api *DownloaderAPI) SubscribeSyncStatus(status chan interface{}) *SyncStatusSubscription {
 	api.installSyncSubscription <- status
 	return &SyncStatusSubscription{api: api, c: status}
 }

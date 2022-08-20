@@ -4,7 +4,12 @@ import (
 	"crypto/ecdsa"
 	crand "crypto/rand"
 	"errors"
-	"fmt"
+	"github.com/entropyio/go-entropy/accounts"
+	"github.com/entropyio/go-entropy/blockchain/model"
+	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/common/crypto"
+	"github.com/entropyio/go-entropy/event"
+	"github.com/entropyio/go-entropy/logger"
 	"math/big"
 	"os"
 	"path/filepath"
@@ -12,13 +17,6 @@ import (
 	"runtime"
 	"sync"
 	"time"
-
-	"github.com/entropyio/go-entropy/accounts"
-	"github.com/entropyio/go-entropy/blockchain/model"
-	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/common/crypto"
-	"github.com/entropyio/go-entropy/event"
-	"github.com/entropyio/go-entropy/logger"
 )
 
 var log = logger.NewLogger("[keystore]")
@@ -27,6 +25,10 @@ var (
 	ErrLocked  = accounts.NewAuthNeededError("password or unlock")
 	ErrNoMatch = errors.New("no key for given address or file")
 	ErrDecrypt = errors.New("could not decrypt key with given password")
+
+	// ErrAccountAlreadyExists is returned if an account attempted to import is
+	// already present in the keystore.
+	ErrAccountAlreadyExists = errors.New("account already exists")
 )
 
 // KeyStoreType is the reflect type of a keystore backend.
@@ -50,7 +52,8 @@ type KeyStore struct {
 	updateScope event.SubscriptionScope // Subscription scope tracking current live listeners
 	updating    bool                    // Whether the event notification loop is running
 
-	mu sync.RWMutex
+	mu       sync.RWMutex
+	importMu sync.Mutex // Import Mutex locks the import to prevent two insertions from racing
 }
 
 type unlocked struct {
@@ -115,7 +118,7 @@ func (ks *KeyStore) Wallets() []accounts.Wallet {
 // refreshWallets retrieves the current account list and based on that does any
 // necessary wallet refreshes.
 func (ks *KeyStore) refreshWallets() {
-	// Retrieve the current list of account
+	// Retrieve the current list of accounts
 	ks.mu.Lock()
 	accs := ks.cache.accounts()
 
@@ -126,7 +129,7 @@ func (ks *KeyStore) refreshWallets() {
 	)
 
 	for _, accountObj := range accs {
-		// Drop wallets while they were in front of the next accounts
+		// Drop wallets while they were in front of the next account
 		for len(ks.wallets) > 0 && ks.wallets[0].URL().Cmp(accountObj.URL) < 0 {
 			events = append(events, accounts.WalletEvent{Wallet: ks.wallets[0], Kind: accounts.WalletDropped})
 			ks.wallets = ks.wallets[1:]
@@ -159,7 +162,7 @@ func (ks *KeyStore) refreshWallets() {
 	}
 }
 
-// Subscribe implements account.Backend, creating an async subscription to
+// Subscribe implements accounts.Backend, creating an async subscription to
 // receive notifications on the addition or removal of keystore wallets.
 func (ks *KeyStore) Subscribe(sink chan<- accounts.WalletEvent) event.Subscription {
 	// We need the mutex to reliably start/stop the update loop
@@ -262,11 +265,9 @@ func (ks *KeyStore) SignTx(a accounts.Account, tx *model.Transaction, chainID *b
 	if !found {
 		return nil, ErrLocked
 	}
-	// Depending on the presence of the chain ID, sign with EIP155 or homestead
-	if chainID != nil {
-		return model.SignTx(tx, model.NewEIP155Signer(chainID), unlockedKey.PrivateKey)
-	}
-	return model.SignTx(tx, model.HomesteadSigner{}, unlockedKey.PrivateKey)
+	// Depending on the presence of the chain ID, sign with 2718 or homestead
+	signer := model.LatestSignerForChainID(chainID)
+	return model.SignTx(tx, signer, unlockedKey.PrivateKey)
 }
 
 // SignHashWithPassphrase signs hash if the private key matching the given address
@@ -289,12 +290,9 @@ func (ks *KeyStore) SignTxWithPassphrase(a accounts.Account, passphrase string, 
 		return nil, err
 	}
 	defer zeroKey(key.PrivateKey)
-
-	// Depending on the presence of the chain ID, sign with EIP155 or homestead
-	if chainID != nil {
-		return model.SignTx(tx, model.NewEIP155Signer(chainID), key.PrivateKey)
-	}
-	return model.SignTx(tx, model.HomesteadSigner{}, key.PrivateKey)
+	// Depending on the presence of the chain ID, sign with or without replay protection.
+	signer := model.LatestSignerForChainID(chainID)
+	return model.SignTx(tx, signer, key.PrivateKey)
 }
 
 // Unlock unlocks the given account indefinitely.
@@ -426,14 +424,27 @@ func (ks *KeyStore) Import(keyJSON []byte, passphrase, newPassphrase string) (ac
 	if err != nil {
 		return accounts.Account{}, err
 	}
+	ks.importMu.Lock()
+	defer ks.importMu.Unlock()
+
+	if ks.cache.hasAddress(key.Address) {
+		return accounts.Account{
+			Address: key.Address,
+		}, ErrAccountAlreadyExists
+	}
 	return ks.importKey(key, newPassphrase)
 }
 
 // ImportECDSA stores the given key into the key directory, encrypting it with the passphrase.
 func (ks *KeyStore) ImportECDSA(priv *ecdsa.PrivateKey, passphrase string) (accounts.Account, error) {
+	ks.importMu.Lock()
+	defer ks.importMu.Unlock()
+
 	key := newKeyFromECDSA(priv)
 	if ks.cache.hasAddress(key.Address) {
-		return accounts.Account{}, fmt.Errorf("account already exists")
+		return accounts.Account{
+			Address: key.Address,
+		}, ErrAccountAlreadyExists
 	}
 	return ks.importKey(key, passphrase)
 }

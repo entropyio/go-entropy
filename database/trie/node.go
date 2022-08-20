@@ -2,18 +2,18 @@ package trie
 
 import (
 	"fmt"
+	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"io"
 	"strings"
-
-	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/common/rlputil"
 )
 
 var indices = []string{"0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "a", "b", "c", "d", "e", "f", "[17]"}
 
 type node interface {
-	fstring(string) string
 	cache() (hashNode, bool)
+	encode(w rlp.EncoderBuffer)
+	fstring(string) string
 }
 
 type (
@@ -36,16 +36,9 @@ var nilValueNode = valueNode(nil)
 
 // EncodeRLP encodes a full node into the consensus RLP format.
 func (n *fullNode) EncodeRLP(w io.Writer) error {
-	var nodes [17]node
-
-	for i, child := range &n.Children {
-		if child != nil {
-			nodes[i] = child
-		} else {
-			nodes[i] = nilValueNode
-		}
-	}
-	return rlputil.Encode(w, nodes)
+	eb := rlp.NewEncoderBuffer(w)
+	n.encode(eb)
+	return eb.Flush()
 }
 
 func (n *fullNode) copy() *fullNode   { copyObj := *n; return &copyObj }
@@ -102,11 +95,11 @@ func decodeNode(hash, buf []byte) (node, error) {
 	if len(buf) == 0 {
 		return nil, io.ErrUnexpectedEOF
 	}
-	elems, _, err := rlputil.SplitList(buf)
+	elems, _, err := rlp.SplitList(buf)
 	if err != nil {
 		return nil, fmt.Errorf("decode error: %v", err)
 	}
-	switch c, _ := rlputil.CountValues(elems); c {
+	switch c, _ := rlp.CountValues(elems); c {
 	case 2:
 		n, err := decodeShort(hash, elems)
 		return n, wrapError(err, "short")
@@ -119,7 +112,7 @@ func decodeNode(hash, buf []byte) (node, error) {
 }
 
 func decodeShort(hash, elems []byte) (node, error) {
-	kbuf, rest, err := rlputil.SplitString(elems)
+	kbuf, rest, err := rlp.SplitString(elems)
 	if err != nil {
 		return nil, err
 	}
@@ -127,7 +120,7 @@ func decodeShort(hash, elems []byte) (node, error) {
 	key := compactToHex(kbuf)
 	if hasTerm(key) {
 		// value node
-		val, _, err := rlputil.SplitString(rest)
+		val, _, err := rlp.SplitString(rest)
 		if err != nil {
 			return nil, fmt.Errorf("invalid value node: %v", err)
 		}
@@ -149,7 +142,7 @@ func decodeFull(hash, elems []byte) (*fullNode, error) {
 		}
 		n.Children[i], elems = cld, rest
 	}
-	val, _, err := rlputil.SplitString(elems)
+	val, _, err := rlp.SplitString(elems)
 	if err != nil {
 		return n, err
 	}
@@ -162,12 +155,12 @@ func decodeFull(hash, elems []byte) (*fullNode, error) {
 const hashLen = len(common.Hash{})
 
 func decodeRef(buf []byte) (node, []byte, error) {
-	kind, val, rest, err := rlputil.Split(buf)
+	kind, val, rest, err := rlp.Split(buf)
 	if err != nil {
 		return nil, buf, err
 	}
 	switch {
-	case kind == rlputil.List:
+	case kind == rlp.List:
 		// 'embedded' node reference. The encoding must be smaller
 		// than a hash in order to be valid.
 		if size := len(buf) - len(rest); size > hashLen {
@@ -176,10 +169,10 @@ func decodeRef(buf []byte) (node, []byte, error) {
 		}
 		n, err := decodeNode(nil, buf)
 		return n, rest, err
-	case kind == rlputil.String && len(val) == 0:
+	case kind == rlp.String && len(val) == 0:
 		// empty node
 		return nil, rest, nil
-	case kind == rlputil.String && len(val) == 32:
+	case kind == rlp.String && len(val) == 32:
 		return append(hashNode{}, val...), rest, nil
 	default:
 		return nil, nil, fmt.Errorf("invalid RLP string size %d (want 0 or 32)", len(val))

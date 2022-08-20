@@ -4,22 +4,16 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"io/ioutil"
-	"os"
+	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/common/crypto"
 	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
-
-	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/common/crypto"
 )
 
 func tmpKeyStoreIface(t *testing.T, encrypted bool) (dir string, ks keyStore) {
-	d, err := ioutil.TempDir("", "entropy-keystore-test")
-	if err != nil {
-		t.Fatal(err)
-	}
+	d := t.TempDir()
 	if encrypted {
 		ks = &keyStorePassphrase{d, veryLightScryptN, veryLightScryptP, true}
 	} else {
@@ -29,8 +23,7 @@ func tmpKeyStoreIface(t *testing.T, encrypted bool) (dir string, ks keyStore) {
 }
 
 func TestKeyStorePlain(t *testing.T) {
-	dir, ks := tmpKeyStoreIface(t, false)
-	defer os.RemoveAll(dir)
+	_, ks := tmpKeyStoreIface(t, false)
 
 	pass := "" // not used but required by API
 	k1, account, err := storeNewKey(ks, rand.Reader, pass)
@@ -50,8 +43,7 @@ func TestKeyStorePlain(t *testing.T) {
 }
 
 func TestKeyStorePassphrase(t *testing.T) {
-	dir, ks := tmpKeyStoreIface(t, true)
-	defer os.RemoveAll(dir)
+	_, ks := tmpKeyStoreIface(t, true)
 
 	pass := "foo"
 	k1, account, err := storeNewKey(ks, rand.Reader, pass)
@@ -71,8 +63,7 @@ func TestKeyStorePassphrase(t *testing.T) {
 }
 
 func TestKeyStorePassphraseDecryptionFail(t *testing.T) {
-	dir, ks := tmpKeyStoreIface(t, true)
-	defer os.RemoveAll(dir)
+	_, ks := tmpKeyStoreIface(t, true)
 
 	pass := "foo"
 	k1, account, err := storeNewKey(ks, rand.Reader, pass)
@@ -80,13 +71,12 @@ func TestKeyStorePassphraseDecryptionFail(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err = ks.GetKey(k1.Address, account.URL.Path, "bar"); err != ErrDecrypt {
-		t.Fatalf("wrong error for invalid passphrase\ngot %q\nwant %q", err, ErrDecrypt)
+		t.Fatalf("wrong error for invalid password\ngot %q\nwant %q", err, ErrDecrypt)
 	}
 }
 
 func TestImportPreSaleKey(t *testing.T) {
 	dir, ks := tmpKeyStoreIface(t, true)
-	defer os.RemoveAll(dir)
 
 	// file content of a presale key file generated with:
 	// python pyethsaletool.py genwallet

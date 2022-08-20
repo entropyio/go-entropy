@@ -1,14 +1,17 @@
 package memorydb
 
 import (
+	"bytes"
 	"errors"
+	"github.com/entropyio/go-entropy/common"
+	"github.com/entropyio/go-entropy/database"
+	"github.com/entropyio/go-entropy/logger"
 	"sort"
 	"strings"
 	"sync"
-
-	"github.com/entropyio/go-entropy/common"
-	"github.com/entropyio/go-entropy/database"
 )
+
+var log = logger.NewLogger("[memDB]")
 
 var (
 	// errMemorydbClosed is returned if a memory database was already closed at the
@@ -18,6 +21,10 @@ var (
 	// errMemorydbNotFound is returned if a key is requested that is not found in
 	// the provided memory database.
 	errMemorydbNotFound = errors.New("not found")
+
+	// errSnapshotReleased is returned if callers want to retrieve data from a
+	// released snapshot.
+	errSnapshotReleased = errors.New("snapshot released")
 )
 
 // Database is an ephemeral key-value store. Apart from basic data storage
@@ -36,7 +43,7 @@ func New() *Database {
 	}
 }
 
-// NewWithCap returns a wrapped map pre-allocated to the provided capcity with
+// NewWithCap returns a wrapped map pre-allocated to the provided capacity with
 // all the required database interface methods implemented.
 func NewWithCap(size int) *Database {
 	return &Database{
@@ -55,7 +62,7 @@ func (db *Database) Close() error {
 }
 
 // Has retrieves if a key is present in the key-value store.
-func (db *Database) Has(key []byte) (bool, error) {
+func (db *Database) Has(key []byte, from string) (bool, error) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
@@ -63,11 +70,12 @@ func (db *Database) Has(key []byte) (bool, error) {
 		return false, errMemorydbClosed
 	}
 	_, ok := db.db[string(key)]
+	log.Debugf("DB Has %s. key:%s, value:%v, err:%v", from, getStringKey(key), ok, nil)
 	return ok, nil
 }
 
 // Get retrieves the given key if it's present in the key-value store.
-func (db *Database) Get(key []byte) ([]byte, error) {
+func (db *Database) Get(key []byte, from string) ([]byte, error) {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
@@ -75,13 +83,14 @@ func (db *Database) Get(key []byte) ([]byte, error) {
 		return nil, errMemorydbClosed
 	}
 	if entry, ok := db.db[string(key)]; ok {
+		log.Debugf("DB Get %s. key:%s, valueSize:%d, err:%v", from, getStringKey(key), len(entry), nil)
 		return common.CopyBytes(entry), nil
 	}
 	return nil, errMemorydbNotFound
 }
 
 // Put inserts the given value into the key-value store.
-func (db *Database) Put(key []byte, value []byte) error {
+func (db *Database) Put(key []byte, value []byte, from string) error {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
@@ -89,11 +98,12 @@ func (db *Database) Put(key []byte, value []byte) error {
 		return errMemorydbClosed
 	}
 	db.db[string(key)] = common.CopyBytes(value)
+	log.Debugf("DB Put %s. key:%s, valueSize:%d, err:%v", from, getStringKey(key), len(value), nil)
 	return nil
 }
 
 // Delete removes the key from the key-value store.
-func (db *Database) Delete(key []byte) error {
+func (db *Database) Delete(key []byte, from string) error {
 	db.lock.Lock()
 	defer db.lock.Unlock()
 
@@ -101,6 +111,7 @@ func (db *Database) Delete(key []byte) error {
 		return errMemorydbClosed
 	}
 	delete(db.db, string(key))
+	log.Debugf("DB Delete %s. key:%s, err:%v", from, getStringKey(key), nil)
 	return nil
 }
 
@@ -112,26 +123,32 @@ func (db *Database) NewBatch() database.Batch {
 	}
 }
 
-// NewIterator creates a binary-alphabetical iterator over the entire keyspace
-// contained within the memory database.
-func (db *Database) NewIterator() database.Iterator {
-	return db.NewIteratorWithStart(nil)
+// NewBatchWithSize creates a write-only database batch with pre-allocated buffer.
+func (db *Database) NewBatchWithSize(int) database.Batch {
+	return &batch{
+		db: db,
+	}
 }
 
-// NewIteratorWithStart creates a binary-alphabetical iterator over a subset of
-// database content starting at a particular initial key (or after, if it does
-// not exist).
-func (db *Database) NewIteratorWithStart(start []byte) database.Iterator {
+// NewIterator creates a binary-alphabetical iterator over a subset
+// of database content with a particular key prefix, starting at a particular
+// initial key (or after, if it does not exist).
+func (db *Database) NewIterator(prefix []byte, start []byte) database.Iterator {
 	db.lock.RLock()
 	defer db.lock.RUnlock()
 
 	var (
-		st     = string(start)
+		pr     = string(prefix)
+		st     = string(append(prefix, start...))
 		keys   = make([]string, 0, len(db.db))
 		values = make([][]byte, 0, len(db.db))
 	)
-	// Collect the keys from the memory database corresponding to the given start
+	// Collect the keys from the memory database corresponding to the given prefix
+	// and start
 	for key := range db.db {
+		if !strings.HasPrefix(key, pr) {
+			continue
+		}
 		if key >= st {
 			keys = append(keys, key)
 		}
@@ -142,47 +159,27 @@ func (db *Database) NewIteratorWithStart(start []byte) database.Iterator {
 		values = append(values, db.db[key])
 	}
 	return &iterator{
+		index:  -1,
 		keys:   keys,
 		values: values,
 	}
 }
 
-// NewIteratorWithPrefix creates a binary-alphabetical iterator over a subset
-// of database content with a particular key prefix.
-func (db *Database) NewIteratorWithPrefix(prefix []byte) database.Iterator {
-	db.lock.RLock()
-	defer db.lock.RUnlock()
-
-	var (
-		pr     = string(prefix)
-		keys   = make([]string, 0, len(db.db))
-		values = make([][]byte, 0, len(db.db))
-	)
-	// Collect the keys from the memory database corresponding to the given prefix
-	for key := range db.db {
-		if strings.HasPrefix(key, pr) {
-			keys = append(keys, key)
-		}
-	}
-	// Sort the items and retrieve the associated values
-	sort.Strings(keys)
-	for _, key := range keys {
-		values = append(values, db.db[key])
-	}
-	return &iterator{
-		keys:   keys,
-		values: values,
-	}
+// NewSnapshot creates a database snapshot based on the current state.
+// The created snapshot will not be affected by all following mutations
+// happened on the database.
+func (db *Database) NewSnapshot() (database.Snapshot, error) {
+	return newSnapshot(db), nil
 }
 
 // Stat returns a particular internal stat of the database.
-func (db *Database) Stat(property string) (string, error) {
+func (db *Database) Stat(string) (string, error) {
 	return "", errors.New("unknown property")
 }
 
 // Compact is not supported on a memory database, but there's no need either as
 // a memory database doesn't waste space anyway.
-func (db *Database) Compact(start []byte, limit []byte) error {
+func (db *Database) Compact([]byte, []byte) error {
 	return nil
 }
 
@@ -214,16 +211,18 @@ type batch struct {
 }
 
 // Put inserts the given value into the batch for later committing.
-func (b *batch) Put(key, value []byte) error {
+func (b *batch) Put(key, value []byte, from string) error {
 	b.writes = append(b.writes, keyvalue{common.CopyBytes(key), common.CopyBytes(value), false})
-	b.size += len(value)
+	b.size += len(key) + len(value)
+	log.Debugf("batch Put %s. key:%s, vSize:%d, bSize:%d", from, getStringKey(key), len(value), b.size)
 	return nil
 }
 
 // Delete inserts the a key removal into the batch for later committing.
-func (b *batch) Delete(key []byte) error {
+func (b *batch) Delete(key []byte, from string) error {
 	b.writes = append(b.writes, keyvalue{common.CopyBytes(key), nil, true})
-	b.size += 1
+	b.size += len(key)
+	log.Debugf("batch Delete %s. key:%s, bSize:%d", from, getStringKey(key), b.size)
 	return nil
 }
 
@@ -257,12 +256,12 @@ func (b *batch) Reset() {
 func (b *batch) Replay(w database.KeyValueWriter) error {
 	for _, keyvalue := range b.writes {
 		if keyvalue.delete {
-			if err := w.Delete(keyvalue.key); err != nil {
+			if err := w.Delete(keyvalue.key, "replay"); err != nil {
 				return err
 			}
 			continue
 		}
-		if err := w.Put(keyvalue.key, keyvalue.value); err != nil {
+		if err := w.Put(keyvalue.key, keyvalue.value, "replay"); err != nil {
 			return err
 		}
 	}
@@ -273,7 +272,7 @@ func (b *batch) Replay(w database.KeyValueWriter) error {
 // value store. Internally it is a deep copy of the entire iterated state,
 // sorted by keys.
 type iterator struct {
-	inited bool
+	index  int
 	keys   []string
 	values [][]byte
 }
@@ -281,17 +280,12 @@ type iterator struct {
 // Next moves the iterator to the next key/value pair. It returns whether the
 // iterator is exhausted.
 func (it *iterator) Next() bool {
-	// If the iterator was not yet initialized, do it now
-	if !it.inited {
-		it.inited = true
-		return len(it.keys) > 0
+	// Short circuit if iterator is already exhausted in the forward direction.
+	if it.index >= len(it.keys) {
+		return false
 	}
-	// Iterator already initialize, advance it
-	if len(it.keys) > 0 {
-		it.keys = it.keys[1:]
-		it.values = it.values[1:]
-	}
-	return len(it.keys) > 0
+	it.index += 1
+	return it.index < len(it.keys)
 }
 
 // Error returns any accumulated error. Exhausting all the key/value pairs
@@ -304,24 +298,96 @@ func (it *iterator) Error() error {
 // should not modify the contents of the returned slice, and its contents may
 // change on the next call to Next.
 func (it *iterator) Key() []byte {
-	if len(it.keys) > 0 {
-		return []byte(it.keys[0])
+	// Short circuit if iterator is not in a valid position
+	if it.index < 0 || it.index >= len(it.keys) {
+		return nil
 	}
-	return nil
+	return []byte(it.keys[it.index])
 }
 
 // Value returns the value of the current key/value pair, or nil if done. The
 // caller should not modify the contents of the returned slice, and its contents
 // may change on the next call to Next.
 func (it *iterator) Value() []byte {
-	if len(it.values) > 0 {
-		return it.values[0]
+	// Short circuit if iterator is not in a valid position
+	if it.index < 0 || it.index >= len(it.keys) {
+		return nil
 	}
-	return nil
+	return it.values[it.index]
 }
 
 // Release releases associated resources. Release should always succeed and can
 // be called multiple times without causing error.
 func (it *iterator) Release() {
-	it.keys, it.values = nil, nil
+	it.index, it.keys, it.values = -1, nil, nil
+}
+
+// snapshot wraps a batch of key-value entries deep copied from the in-memory
+// database for implementing the Snapshot interface.
+type snapshot struct {
+	db   map[string][]byte
+	lock sync.RWMutex
+}
+
+// newSnapshot initializes the snapshot with the given database instance.
+func newSnapshot(db *Database) *snapshot {
+	db.lock.RLock()
+	defer db.lock.RUnlock()
+
+	copied := make(map[string][]byte)
+	for key, val := range db.db {
+		copied[key] = common.CopyBytes(val)
+	}
+	return &snapshot{db: copied}
+}
+
+// Has retrieves if a key is present in the snapshot backing by a key-value
+// data store.
+func (snap *snapshot) Has(key []byte, from string) (bool, error) {
+	snap.lock.RLock()
+	defer snap.lock.RUnlock()
+
+	if snap.db == nil {
+		return false, errSnapshotReleased
+	}
+	_, ok := snap.db[string(key)]
+	log.Debugf("snap Has %s. key:%s, value:%v, err:%v", from, getStringKey(key), ok, nil)
+	return ok, nil
+}
+
+// Get retrieves the given key if it's present in the snapshot backing by
+// key-value data store.
+func (snap *snapshot) Get(key []byte, from string) ([]byte, error) {
+	snap.lock.RLock()
+	defer snap.lock.RUnlock()
+
+	if snap.db == nil {
+		return nil, errSnapshotReleased
+	}
+	if entry, ok := snap.db[string(key)]; ok {
+		log.Debugf("snap Get %s. key:%s, vSize:%v, err:%v", from, getStringKey(key), len(entry), nil)
+		return common.CopyBytes(entry), nil
+	}
+	return nil, errMemorydbNotFound
+}
+
+// Release releases associated resources. Release should always succeed and can
+// be called multiple times without causing error.
+func (snap *snapshot) Release() {
+	snap.lock.Lock()
+	defer snap.lock.Unlock()
+
+	snap.db = nil
+}
+
+func getStringKey(key []byte) string {
+	var buf bytes.Buffer
+	for b := range key {
+		if key[b] > 0x20 && key[b] < 0x7F {
+			buf.WriteByte(key[b])
+		} else {
+			buf.WriteByte(0x7E)
+		}
+	}
+	return buf.String()
 }

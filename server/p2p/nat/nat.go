@@ -4,13 +4,12 @@ package nat
 import (
 	"errors"
 	"fmt"
+	"github.com/entropyio/go-entropy/logger"
+	natpmp "github.com/jackpal/go-nat-pmp"
 	"net"
 	"strings"
 	"sync"
 	"time"
-
-	"github.com/entropyio/go-entropy/logger"
-	"github.com/jackpal/go-nat-pmp"
 )
 
 var log = logger.NewLogger("[nat]")
@@ -77,21 +76,20 @@ func Parse(spec string) (Interface, error) {
 }
 
 const (
-	mapTimeout        = 20 * time.Minute
-	mapUpdateInterval = 15 * time.Minute
+	mapTimeout = 10 * time.Minute
 )
 
 // Map adds a port mapping on m and keeps it alive until c is closed.
 // This function is typically invoked in its own goroutine.
 func Map(m Interface, c chan struct{}, protocol string, extport, intport int, name string) {
-	refresh := time.NewTimer(mapUpdateInterval)
+	refresh := time.NewTimer(mapTimeout)
 	defer func() {
 		refresh.Stop()
-		log.Debug("Deleting port mapping")
+		//log.Debug("Deleting port mapping")
 		m.DeleteMapping(protocol, extport, intport)
 	}()
 	if err := m.AddMapping(protocol, extport, intport, name, mapTimeout); err != nil {
-		log.Debug("Couldn't add port mapping", "err", err)
+		//log.Debug("Couldn't add port mapping", "err", err)
 	} else {
 		log.Info("Mapped network port")
 	}
@@ -106,7 +104,7 @@ func Map(m Interface, c chan struct{}, protocol string, extport, intport int, na
 			if err := m.AddMapping(protocol, extport, intport, name, mapTimeout); err != nil {
 				log.Debug("Couldn't add port mapping", "err", err)
 			}
-			refresh.Reset(mapUpdateInterval)
+			refresh.Reset(mapTimeout)
 		}
 	}
 }
@@ -205,9 +203,8 @@ func (n *autodisc) String() string {
 	defer n.mu.Unlock()
 	if n.found == nil {
 		return n.what
-	} else {
-		return n.found.String()
 	}
+	return n.found.String()
 }
 
 // wait blocks until auto-discovery has been performed.

@@ -1,14 +1,12 @@
-package entropy_test
+package entropyio_test
 
 import (
 	"fmt"
-	"github.com/entropyio/go-entropy/blockchain"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/state"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/config"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/evm"
-	"github.com/entropyio/go-entropy/evm/runtime"
 	"math/big"
 	"testing"
 )
@@ -21,49 +19,18 @@ func TestEVM_Call(t *testing.T) {
 	gas := uint64(9223372036854754343)
 	value := big.NewInt(0)
 
-	cfg := runtime.Config{
-		Coinbase:    from,
-		BlockNumber: value,
-		Origin:      from,
-		GasLimit:    gas,
-		GasPrice:    big.NewInt(10000),
-		Difficulty:  big.NewInt(21000),
-		Time:        big.NewInt(1536026016957),
-		ChainConfig: &config.ChainConfig{
-			ChainID:        value,
-			HomesteadBlock: big.NewInt(0),
-			// Various consensus engines
-			Ethash:        config.EthashChainConfig.Ethash,
-			Clique:        config.CliqueChainConfig.Clique,
-			Claude:        config.ClaudeChainConfig.Claude,
-			ConsensusType: config.ConsensusTypeEthash,
-		},
-	}
-
-	stateDb, _ := state.New(common.Hash{}, state.NewDatabase(mapper.NewMemoryDatabase()))
+	stateDb, _ := state.New(common.Hash{}, state.NewDatabase(rawdb.NewMemoryDatabase()), nil)
 	stateDb.SetState(from, common.HexToHash("0xf7fe84ec6d79bb7ae74ee5c301a551b0440b27e2"), common.HexToHash("0xf7fe84ec6d79bb7ae74ee5c301a551b0440b27e2"))
 	stateDb.AddBalance(from, big.NewInt(420000000000000000))
 
 	stateDb.SetState(to, common.HexToHash("0xaaf9025f1d9c2d2d36175011e7eca37c453174d0"), common.HexToHash("0xaaf9025f1d9c2d2d36175011e7eca37c453174d0"))
 	stateDb.SetCode(to, contractCode)
-	stateDb.Commit(false)
+	_, _ = stateDb.Commit(false)
 
-	context := evm.Context{
-		CanTransfer: blockchain.CanTransfer,
-		Transfer:    blockchain.Transfer,
-		GetHash:     func(uint64) common.Hash { return common.Hash{} },
-
-		Origin:      cfg.Origin,
-		Coinbase:    cfg.Coinbase,
-		BlockNumber: cfg.BlockNumber,
-		Time:        cfg.Time,
-		Difficulty:  cfg.Difficulty,
-		GasLimit:    cfg.GasLimit,
-		GasPrice:    cfg.GasPrice,
+	vmCtx := evm.BlockContext{
+		Transfer: func(evm.StateDB, common.Address, common.Address, *big.Int) {},
 	}
-	cfg.State = stateDb
-
-	env := evm.NewEVM(context, stateDb, cfg.ChainConfig, cfg.EVMConfig)
+	env := evm.NewEVM(vmCtx, evm.TxContext{}, stateDb, config.TestChainConfig, evm.Config{})
 
 	//func (evm *EVM) Call(caller ContractRef, addr common.Address, input []byte, gas uint64, value *big.Int)
 	ret, retgas, vmerr := env.Call(evm.AccountRef(from), to, data, gas, value)

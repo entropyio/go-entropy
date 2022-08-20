@@ -1,11 +1,11 @@
+//go:build (darwin && !ios) || freebsd || (linux && !arm64) || netbsd || solaris
 // +build darwin,!ios freebsd linux,!arm64 netbsd solaris
 
 package keystore
 
 import (
-	"time"
-
 	"github.com/rjeczalik/notify"
+	"time"
 )
 
 type watcher struct {
@@ -83,7 +83,7 @@ func (w *watcher) loop() {
 				rescanTriggered = true
 			}
 		case <-debounce.C:
-			w.ac.scanAccounts()
+			_ = w.ac.scanAccounts()
 			rescanTriggered = false
 		}
 	}

@@ -1,8 +1,9 @@
 package enr
 
 import (
+	"errors"
 	"fmt"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"io"
 	"net"
 )
@@ -11,7 +12,7 @@ import (
 //
 // To define a new entry that is to be included in a node record,
 // create a Go type that satisfies this interface. The type should
-// also implement rlputil.Decoder if additional checks are needed on the value.
+// also implement rlp.Decoder if additional checks are needed on the value.
 type Entry interface {
 	ENRKey() string
 }
@@ -24,15 +25,15 @@ type generic struct {
 func (g generic) ENRKey() string { return g.key }
 
 func (g generic) EncodeRLP(w io.Writer) error {
-	return rlputil.Encode(w, g.value)
+	return rlp.Encode(w, g.value)
 }
 
-func (g *generic) DecodeRLP(s *rlputil.Stream) error {
+func (g *generic) DecodeRLP(s *rlp.Stream) error {
 	return s.Decode(g.value)
 }
 
 // WithEntry wraps any value with a key name. It can be used to set and load arbitrary values
-// in a record. The value v must be supported by rlputil. To use WithEntry with Load, the value
+// in a record. The value v must be supported by rlp. To use WithEntry with Load, the value
 // must be a pointer.
 func WithEntry(k string, v interface{}) Entry {
 	return &generic{key: k, value: v}
@@ -80,16 +81,16 @@ func (v IP) ENRKey() string {
 // EncodeRLP implements rlp.Encoder.
 func (v IP) EncodeRLP(w io.Writer) error {
 	if ip4 := net.IP(v).To4(); ip4 != nil {
-		return rlputil.Encode(w, ip4)
+		return rlp.Encode(w, ip4)
 	}
 	if ip6 := net.IP(v).To16(); ip6 != nil {
-		return rlputil.Encode(w, ip6)
+		return rlp.Encode(w, ip6)
 	}
 	return fmt.Errorf("invalid IP address: %v", net.IP(v))
 }
 
-// DecodeRLP implements rlputil.Decoder.
-func (v *IP) DecodeRLP(s *rlputil.Stream) error {
+// DecodeRLP implements rlp.Decoder.
+func (v *IP) DecodeRLP(s *rlp.Stream) error {
 	if err := s.Decode((*net.IP)(v)); err != nil {
 		return err
 	}
@@ -110,11 +111,11 @@ func (v IPv4) EncodeRLP(w io.Writer) error {
 	if ip4 == nil {
 		return fmt.Errorf("invalid IPv4 address: %v", net.IP(v))
 	}
-	return rlputil.Encode(w, ip4)
+	return rlp.Encode(w, ip4)
 }
 
 // DecodeRLP implements rlp.Decoder.
-func (v *IPv4) DecodeRLP(s *rlputil.Stream) error {
+func (v *IPv4) DecodeRLP(s *rlp.Stream) error {
 	if err := s.Decode((*net.IP)(v)); err != nil {
 		return err
 	}
@@ -135,11 +136,11 @@ func (v IPv6) EncodeRLP(w io.Writer) error {
 	if ip6 == nil {
 		return fmt.Errorf("invalid IPv6 address: %v", net.IP(v))
 	}
-	return rlputil.Encode(w, ip6)
+	return rlp.Encode(w, ip6)
 }
 
 // DecodeRLP implements rlp.Decoder.
-func (v *IPv6) DecodeRLP(s *rlputil.Stream) error {
+func (v *IPv6) DecodeRLP(s *rlp.Stream) error {
 	if err := s.Decode((*net.IP)(v)); err != nil {
 		return err
 	}
@@ -163,9 +164,16 @@ func (err *KeyError) Error() string {
 	return fmt.Sprintf("ENR key %q: %v", err.Key, err.Err)
 }
 
+func (err *KeyError) Unwrap() error {
+	return err.Err
+}
+
 // IsNotFound reports whether the given error means that a key/value pair is
 // missing from a record.
 func IsNotFound(err error) bool {
-	kerr, ok := err.(*KeyError)
-	return ok && kerr.Err == errNotFound
+	var ke *KeyError
+	if errors.As(err, &ke) {
+		return ke.Err == errNotFound
+	}
+	return false
 }

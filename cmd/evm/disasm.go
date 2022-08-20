@@ -4,12 +4,12 @@ import (
 	"errors"
 	"fmt"
 	"github.com/entropyio/go-entropy/evm/asm"
-	"gopkg.in/urfave/cli.v1"
-	"io/ioutil"
+	"github.com/urfave/cli/v2"
+	"os"
 	"strings"
 )
 
-var disasmCommand = cli.Command{
+var disasmCommand = &cli.Command{
 	Action:    disasmCmd,
 	Name:      "disasm",
 	Usage:     "disassembles evm binary",
@@ -17,17 +17,22 @@ var disasmCommand = cli.Command{
 }
 
 func disasmCmd(ctx *cli.Context) error {
-	if len(ctx.Args().First()) == 0 {
-		return errors.New("filename required")
+	var in string
+	switch {
+	case len(ctx.Args().First()) > 0:
+		fn := ctx.Args().First()
+		input, err := os.ReadFile(fn)
+		if err != nil {
+			return err
+		}
+		in = string(input)
+	case ctx.IsSet(InputFlag.Name):
+		in = ctx.String(InputFlag.Name)
+	default:
+		return errors.New("missing filename or --input value")
 	}
 
-	fn := ctx.Args().First()
-	in, err := ioutil.ReadFile(fn)
-	if err != nil {
-		return err
-	}
-
-	code := strings.TrimSpace(string(in))
+	code := strings.TrimSpace(in)
 	fmt.Printf("%v\n", code)
 	return asm.PrintDisassembled(code)
 }

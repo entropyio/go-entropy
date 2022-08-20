@@ -1,4 +1,4 @@
-// Package enr implements Ethereum Node Records as defined in EIP-778. A node record holds
+// Package enr implements Entropy Node Records as defined in EIP-778. A node record holds
 // arbitrary information about a node on the peer-to-peer network. Node information is
 // stored in key/value pairs. To store and retrieve key/values in a record, use the Entry
 // interface.
@@ -21,7 +21,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
-	"github.com/entropyio/go-entropy/common/rlputil"
+	"github.com/entropyio/go-entropy/common/rlp"
 	"io"
 	"sort"
 )
@@ -33,6 +33,7 @@ var (
 	errNotSorted      = errors.New("record key/value pairs are not sorted by key")
 	errDuplicateKey   = errors.New("record contains duplicate key")
 	errIncompletePair = errors.New("record contains incomplete k/v pair")
+	errIncompleteList = errors.New("record contains less than two list elements")
 	errTooBig         = fmt.Errorf("record bigger than %d bytes", SizeLimit)
 	errEncodeUnsigned = errors.New("can't encode unsigned record")
 	errNotFound       = errors.New("no such key in record")
@@ -75,7 +76,7 @@ type Record struct {
 // pair is a key/value pair in a record.
 type pair struct {
 	k string
-	v rlputil.RawValue
+	v rlp.RawValue
 }
 
 // Seq returns the sequence number.
@@ -100,7 +101,7 @@ func (r *Record) SetSeq(s uint64) {
 func (r *Record) Load(e Entry) error {
 	i := sort.Search(len(r.pairs), func(i int) bool { return r.pairs[i].k >= e.ENRKey() })
 	if i < len(r.pairs) && r.pairs[i].k == e.ENRKey() {
-		if err := rlputil.DecodeBytes(r.pairs[i].v, e); err != nil {
+		if err := rlp.DecodeBytes(r.pairs[i].v, e); err != nil {
 			return &KeyError{Key: e.ENRKey(), Err: err}
 		}
 		return nil
@@ -112,7 +113,7 @@ func (r *Record) Load(e Entry) error {
 // encoded. If the record is signed, Set increments the sequence number and invalidates
 // the sequence number.
 func (r *Record) Set(e Entry) {
-	blob, err := rlputil.EncodeToBytes(e)
+	blob, err := rlp.EncodeToBytes(e)
 	if err != nil {
 		panic(fmt.Errorf("enr: can't encode %s: %v", e.ENRKey(), err))
 	}
@@ -167,7 +168,7 @@ func (r Record) EncodeRLP(w io.Writer) error {
 }
 
 // DecodeRLP implements rlp.Decoder. Decoding doesn't verify the signature.
-func (r *Record) DecodeRLP(s *rlputil.Stream) error {
+func (r *Record) DecodeRLP(s *rlp.Stream) error {
 	dec, raw, err := decodeRecord(s)
 	if err != nil {
 		return err
@@ -177,7 +178,7 @@ func (r *Record) DecodeRLP(s *rlputil.Stream) error {
 	return nil
 }
 
-func decodeRecord(s *rlputil.Stream) (dec Record, raw []byte, err error) {
+func decodeRecord(s *rlp.Stream) (dec Record, raw []byte, err error) {
 	raw, err = s.Raw()
 	if err != nil {
 		return dec, raw, err
@@ -187,14 +188,20 @@ func decodeRecord(s *rlputil.Stream) (dec Record, raw []byte, err error) {
 	}
 
 	// Decode the RLP container.
-	s = rlputil.NewStream(bytes.NewReader(raw), 0)
+	s = rlp.NewStream(bytes.NewReader(raw), 0)
 	if _, err := s.List(); err != nil {
 		return dec, raw, err
 	}
 	if err = s.Decode(&dec.signature); err != nil {
+		if err == rlp.EOL {
+			err = errIncompleteList
+		}
 		return dec, raw, err
 	}
 	if err = s.Decode(&dec.seq); err != nil {
+		if err == rlp.EOL {
+			err = errIncompleteList
+		}
 		return dec, raw, err
 	}
 	// The rest of the record contains sorted k/v pairs.
@@ -202,13 +209,13 @@ func decodeRecord(s *rlputil.Stream) (dec Record, raw []byte, err error) {
 	for i := 0; ; i++ {
 		var kv pair
 		if err := s.Decode(&kv.k); err != nil {
-			if err == rlputil.EOL {
+			if err == rlp.EOL {
 				break
 			}
 			return dec, raw, err
 		}
 		if err := s.Decode(&kv.v); err != nil {
-			if err == rlputil.EOL {
+			if err == rlp.EOL {
 				return dec, raw, errIncompletePair
 			}
 			return dec, raw, err
@@ -280,10 +287,10 @@ func (r *Record) AppendElements(list []interface{}) []interface{} {
 }
 
 func (r *Record) encode(sig []byte) (raw []byte, err error) {
-	list := make([]interface{}, 1, 2*len(r.pairs)+1)
+	list := make([]interface{}, 1, 2*len(r.pairs)+2)
 	list[0] = sig
 	list = r.AppendElements(list)
-	if raw, err = rlputil.EncodeToBytes(list); err != nil {
+	if raw, err = rlp.EncodeToBytes(list); err != nil {
 		return nil, err
 	}
 	if len(raw) > SizeLimit {

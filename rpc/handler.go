@@ -171,7 +171,7 @@ func (h *handler) cancelAllRequests(err error, inflightReq *requestOp) {
 	}
 	for id, sub := range h.clientSubs {
 		delete(h.clientSubs, id)
-		sub.quitWithError(false, err)
+		sub.close(err)
 	}
 }
 
@@ -263,7 +263,7 @@ func (h *handler) handleResponse(msg *jsonrpcMessage) {
 		return
 	}
 	if op.err = json.Unmarshal(msg.Result, &op.sub.subid); op.err == nil {
-		go op.sub.start()
+		go op.sub.run()
 		h.clientSubs[op.sub.subid] = op.sub
 	}
 }
@@ -278,10 +278,16 @@ func (h *handler) handleCallMsg(ctx *callProc, msg *jsonrpcMessage) *jsonrpcMess
 		return nil
 	case msg.isCall():
 		resp := h.handleCall(ctx, msg)
+		var ctx []interface{}
+		ctx = append(ctx, "reqid", idForLog{msg.ID}, "duration", time.Since(start))
 		if resp.Error != nil {
-			log.Warning("Served "+msg.Method, "reqid", idForLog{msg.ID}, "t", time.Since(start), "err", resp.Error.Message)
+			ctx = append(ctx, "err", resp.Error.Message)
+			if resp.Error.Data != nil {
+				ctx = append(ctx, "errdata", resp.Error.Data)
+			}
+			log.Warning("Served "+msg.Method, ctx)
 		} else {
-			log.Debug("Served "+msg.Method, "reqid", idForLog{msg.ID}, "t", time.Since(start))
+			log.Debug("Served "+msg.Method, ctx)
 		}
 		return resp
 	case msg.hasValidID():
@@ -309,8 +315,22 @@ func (h *handler) handleCall(cp *callProc, msg *jsonrpcMessage) *jsonrpcMessage 
 	if err != nil {
 		return msg.errorResponse(&invalidParamsError{err.Error()})
 	}
+	start := time.Now()
+	answer := h.runMethod(cp.ctx, msg, callb, args)
 
-	return h.runMethod(cp.ctx, msg, callb, args)
+	// Collect the statistics for RPC calls if metrics is enabled.
+	// We only care about pure rpc call. Filter out subscription.
+	if callb != h.unsubscribeCb {
+		rpcRequestGauge.Inc(1)
+		if answer.Error != nil {
+			failedRequestGauge.Inc(1)
+		} else {
+			successfulRequestGauge.Inc(1)
+		}
+		rpcServingTimer.UpdateSince(start)
+		updateServeTimeHistogram(msg.Method, answer.Error == nil, time.Since(start))
+	}
+	return answer
 }
 
 // handleSubscribe processes *_subscribe method calls.

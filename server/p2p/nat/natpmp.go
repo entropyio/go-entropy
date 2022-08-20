@@ -2,11 +2,10 @@ package nat
 
 import (
 	"fmt"
+	natpmp "github.com/jackpal/go-nat-pmp"
 	"net"
 	"strings"
 	"time"
-
-	"github.com/jackpal/go-nat-pmp"
 )
 
 // natPMPClient adapts the NAT-PMP protocol implementation so it conforms to

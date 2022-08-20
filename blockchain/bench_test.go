@@ -2,13 +2,6 @@ package blockchain
 
 import (
 	"crypto/ecdsa"
-	"io/ioutil"
-	"math/big"
-	"os"
-	"testing"
-
-	"github.com/entropyio/go-entropy/blockchain/genesis"
-	"github.com/entropyio/go-entropy/blockchain/mapper"
 	"github.com/entropyio/go-entropy/blockchain/model"
 	"github.com/entropyio/go-entropy/common"
 	"github.com/entropyio/go-entropy/common/crypto"
@@ -16,7 +9,10 @@ import (
 	"github.com/entropyio/go-entropy/config"
 	"github.com/entropyio/go-entropy/consensus/ethash"
 	"github.com/entropyio/go-entropy/database"
+	"github.com/entropyio/go-entropy/database/rawdb"
 	"github.com/entropyio/go-entropy/evm"
+	"math/big"
+	"testing"
 )
 
 func BenchmarkInsertChain_empty_memdb(b *testing.B) {
@@ -60,7 +56,7 @@ var (
 	// This is the content of the genesis block used by the benchmarks.
 	benchRootKey, _ = crypto.HexToECDSA("b71c71a67e1177ad4e901695e1b4b9ee17ae16c6668d313eac2f96dbcda3f291")
 	benchRootAddr   = crypto.PubkeyToAddress(benchRootKey.PublicKey)
-	benchRootFunds  = mathutil.BigPow(2, 100)
+	benchRootFunds  = mathutil.BigPow(2, 200)
 )
 
 // genValueTx returns a block generator that includes a single
@@ -70,8 +66,20 @@ func genValueTx(nbytes int) func(int, *BlockGen) {
 	return func(i int, gen *BlockGen) {
 		toaddr := common.Address{}
 		data := make([]byte, nbytes)
-		gas, _ := IntrinsicGas(data, false, false, false)
-		tx, _ := model.SignTx(model.NewTransaction(gen.TxNonce(benchRootAddr), toaddr, big.NewInt(1), gas, nil, data), model.HomesteadSigner{}, benchRootKey)
+		gas, _ := IntrinsicGas(data, nil, false, false)
+		signer := model.MakeSigner(gen.config, big.NewInt(int64(i)))
+		gasPrice := big.NewInt(0)
+		if gen.header.BaseFee != nil {
+			gasPrice = gen.header.BaseFee
+		}
+		tx, _ := model.SignNewTx(benchRootKey, signer, &model.LegacyTx{
+			Nonce:    gen.TxNonce(benchRootAddr),
+			To:       &toaddr,
+			Value:    big.NewInt(1),
+			Gas:      gas,
+			Data:     data,
+			GasPrice: gasPrice,
+		})
 		gen.AddTx(tx)
 	}
 }
@@ -95,24 +103,38 @@ func init() {
 // and fills the blocks with many small transactions.
 func genTxRing(naccounts int) func(int, *BlockGen) {
 	from := 0
+	availableFunds := new(big.Int).Set(benchRootFunds)
 	return func(i int, gen *BlockGen) {
 		block := gen.PrevBlock(i - 1)
-		gas := CalcGasLimit(block, block.GasLimit(), block.GasLimit())
+		gas := block.GasLimit()
+		gasPrice := big.NewInt(0)
+		if gen.header.BaseFee != nil {
+			gasPrice = gen.header.BaseFee
+		}
+		signer := model.MakeSigner(gen.config, big.NewInt(int64(i)))
 		for {
 			gas -= config.TxGas
 			if gas < config.TxGas {
 				break
 			}
 			to := (from + 1) % naccounts
-			tx := model.NewTransaction(
-				gen.TxNonce(ringAddrs[from]),
-				ringAddrs[to],
-				benchRootFunds,
-				config.TxGas,
-				nil,
-				nil,
-			)
-			tx, _ = model.SignTx(tx, model.HomesteadSigner{}, ringKeys[from])
+			burn := new(big.Int).SetUint64(config.TxGas)
+			burn.Mul(burn, gen.header.BaseFee)
+			availableFunds.Sub(availableFunds, burn)
+			if availableFunds.Cmp(big.NewInt(1)) < 0 {
+				panic("not enough funds")
+			}
+			tx, err := model.SignNewTx(ringKeys[from], signer,
+				&model.LegacyTx{
+					Nonce:    gen.TxNonce(ringAddrs[from]),
+					To:       &ringAddrs[to],
+					Value:    availableFunds,
+					Gas:      config.TxGas,
+					GasPrice: gasPrice,
+				})
+			if err != nil {
+				panic(err)
+			}
 			gen.AddTx(tx)
 			from = to
 		}
@@ -121,7 +143,7 @@ func genTxRing(naccounts int) func(int, *BlockGen) {
 
 // genUncles generates blocks with two uncle headers.
 func genUncles(i int, gen *BlockGen) {
-	if i >= 6 {
+	if i >= 7 {
 		b2 := gen.PrevBlock(i - 6).Header()
 		b2.Extra = []byte("foo")
 		gen.AddUncle(b2)
@@ -134,15 +156,12 @@ func genUncles(i int, gen *BlockGen) {
 func benchInsertChain(b *testing.B, disk bool, gen func(int, *BlockGen)) {
 	// Create the database in memory or in a temporary directory.
 	var db database.Database
+	var err error
 	if !disk {
-		db = mapper.NewMemoryDatabase()
+		db = rawdb.NewMemoryDatabase()
 	} else {
-		dir, err := ioutil.TempDir("", "eth-core-bench")
-		if err != nil {
-			b.Fatalf("cannot create temporary directory: %v", err)
-		}
-		defer os.RemoveAll(dir)
-		db, err = mapper.NewLevelDBDatabase(dir, 128, 128, "")
+		dir := b.TempDir()
+		db, err = rawdb.NewLevelDBDatabase(dir, 128, 128, "", false)
 		if err != nil {
 			b.Fatalf("cannot create temporary database: %v", err)
 		}
@@ -151,16 +170,16 @@ func benchInsertChain(b *testing.B, disk bool, gen func(int, *BlockGen)) {
 
 	// Generate a chain of b.N blocks using the supplied block
 	// generator function.
-	gspec := genesis.Genesis{
+	gspec := Genesis{
 		Config: config.TestChainConfig,
-		Alloc:  genesis.GenesisAlloc{benchRootAddr: {Balance: benchRootFunds}},
+		Alloc:  GenesisAlloc{benchRootAddr: {Balance: benchRootFunds}},
 	}
-	genesisObj := gspec.MustCommit(db)
-	chain, _ := GenerateChain(gspec.Config, genesisObj, ethash.NewFaker(), db, b.N, gen)
+	genesis := gspec.MustCommit(db)
+	chain, _ := GenerateChain(gspec.Config, genesis, ethash.NewFaker(), db, b.N, gen)
 
 	// Time the insertion of the new chain.
 	// State and blocks are stored in the same DB.
-	chainman, _ := NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{}, nil)
+	chainman, _ := NewBlockChain(db, nil, gspec.Config, ethash.NewFaker(), evm.Config{}, nil, nil)
 	defer chainman.Stop()
 	b.ReportAllocs()
 	b.ResetTimer()
@@ -222,57 +241,52 @@ func makeChainForBench(db database.Database, full bool, count uint64) {
 		}
 		hash = header.Hash()
 
-		mapper.WriteHeader(db, header)
-		mapper.WriteCanonicalHash(db, hash, n)
-		mapper.WriteTd(db, hash, n, big.NewInt(int64(n+1)))
+		rawdb.WriteHeader(db, header)
+		rawdb.WriteCanonicalHash(db, hash, n)
+		rawdb.WriteTd(db, hash, n, big.NewInt(int64(n+1)))
 
 		if full || n == 0 {
 			block := model.NewBlockWithHeader(header)
-			mapper.WriteBody(db, hash, n, block.Body())
-			mapper.WriteReceipts(db, hash, n, nil)
+			rawdb.WriteBody(db, hash, n, block.Body())
+			rawdb.WriteReceipts(db, hash, n, nil)
+			rawdb.WriteHeadBlockHash(db, hash)
 		}
 	}
 }
 
 func benchWriteChain(b *testing.B, full bool, count uint64) {
 	for i := 0; i < b.N; i++ {
-		dir, err := ioutil.TempDir("", "eth-chain-bench")
-		if err != nil {
-			b.Fatalf("cannot create temporary directory: %v", err)
-		}
-		db, err := mapper.NewLevelDBDatabase(dir, 128, 1024, "")
+		dir := b.TempDir()
+		db, err := rawdb.NewLevelDBDatabase(dir, 128, 1024, "", false)
 		if err != nil {
 			b.Fatalf("error opening database at %v: %v", dir, err)
 		}
 		makeChainForBench(db, full, count)
 		db.Close()
-		os.RemoveAll(dir)
 	}
 }
 
 func benchReadChain(b *testing.B, full bool, count uint64) {
-	dir, err := ioutil.TempDir("", "eth-chain-bench")
-	if err != nil {
-		b.Fatalf("cannot create temporary directory: %v", err)
-	}
-	defer os.RemoveAll(dir)
+	dir := b.TempDir()
 
-	db, err := mapper.NewLevelDBDatabase(dir, 128, 1024, "")
+	db, err := rawdb.NewLevelDBDatabase(dir, 128, 1024, "", false)
 	if err != nil {
 		b.Fatalf("error opening database at %v: %v", dir, err)
 	}
 	makeChainForBench(db, full, count)
 	db.Close()
+	cacheConfig := *defaultCacheConfig
+	cacheConfig.TrieDirtyDisabled = true
 
 	b.ReportAllocs()
 	b.ResetTimer()
 
 	for i := 0; i < b.N; i++ {
-		db, err := mapper.NewLevelDBDatabase(dir, 128, 1024, "")
+		db, err := rawdb.NewLevelDBDatabase(dir, 128, 1024, "", false)
 		if err != nil {
 			b.Fatalf("error opening database at %v: %v", dir, err)
 		}
-		chain, err := NewBlockChain(db, nil, config.TestChainConfig, ethash.NewFaker(), evm.Config{}, nil)
+		chain, err := NewBlockChain(db, &cacheConfig, config.TestChainConfig, ethash.NewFaker(), evm.Config{}, nil, nil)
 		if err != nil {
 			b.Fatalf("error creating chain: %v", err)
 		}
@@ -281,8 +295,8 @@ func benchReadChain(b *testing.B, full bool, count uint64) {
 			header := chain.GetHeaderByNumber(n)
 			if full {
 				hash := header.Hash()
-				mapper.ReadBody(db, hash, n)
-				mapper.ReadReceipts(db, hash, n, chain.Config())
+				rawdb.ReadBody(db, hash, n)
+				rawdb.ReadReceipts(db, hash, n, chain.Config())
 			}
 		}
 		chain.Stop()
