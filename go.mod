@@ -8,7 +8,7 @@ require (
 	github.com/consensys/gnark-crypto v0.7.0
 	github.com/davecgh/go-spew v1.1.1
 	github.com/deckarep/golang-set v1.8.0
-	github.com/docker/docker v1.13.1
+	github.com/docker/docker v20.10.24+incompatible
 	github.com/dop251/goja v0.0.0-20220516123900-4418d4575a41
 	github.com/edsrzf/mmap-go v1.0.0
 	github.com/fatih/color v1.9.0
@@ -87,4 +87,5 @@ require (
 	golang.org/x/xerrors v0.0.0-20220517211312-f3a8303e98df // indirect
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
+	gotest.tools/v3 v3.4.0 // indirect
 )
